@@ -1,0 +1,65 @@
+# Build output and local-only work (includes private diagnostics and archives)
+/.build/
+/.swiftpm/
+/dist/
+/work/
+/DerivedData/
+/local/
+/private/
+/backups/
+
+# Editor and agent state
+/.codex/
+/.agents/
+/.idea/
+/.vscode/
+**/xcuserdata/
+*.xcuserstate
+.DS_Store
+._*
+*~
+*.swp
+
+# Credentials, signing identities and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.local
+*.local.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
+credentials.json
+secrets.json
+/secrets/
+
+# Runtime records and generated diagnostic captures
+*.log
+*.crash
+*.ips
+*.trace
+*.pcap
+*.pcapng
+*.har
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.dSYM/
+__pycache__/
+*.py[cod]
+/coverage/
+/docs/*validation*.json
+/docs/*status*.json
+/docs/*installation*.json
+
+# Packaged apps and archives; distribute deliberate release assets separately
+*.app/
+*.zip
+*.dmg
+*.pkg

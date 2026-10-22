@@ -6,8 +6,9 @@
 
 ## 构建环境
 
-- macOS 14 或更新版本。
-- Swift 6.0 或更新版本的工具链，以及可用的系统开发工具。构建和测试会调用 `swift`、`clang`、`codesign`、`sips` 和 `iconutil`。
+- Xcode 26 或更新版本，包含 macOS 26 SDK 和 Swift 6.2+。源码包含受系统版本保护的 `glassEffect`，旧 SDK 即使能解析包清单也无法编译该 API。
+- 构建机需满足所选 Xcode 的系统要求；Xcode 26 需要 macOS 15.6 或更新版本，见 [Apple 发布说明](https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes)。编译后的 App 最低运行版本仍为 macOS 14。
+- 构建和测试会调用 `swift`、`clang`、`codesign`、`sips` 和 `iconutil`；请确保命令行工具选中了上述 Xcode，而非旧版本或独立 Command Line Tools。
 - 无第三方 Swift 包依赖。
 - 构建与单元测试不要求开启 Tailscale；实际运行分流时需要可用的 Tailscale exit node。
 

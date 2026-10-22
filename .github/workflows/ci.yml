@@ -18,6 +18,8 @@ jobs:
     name: macOS arm64 checks
     runs-on: macos-15
     timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.0.app/Contents/Developer
     defaults:
       run:
         shell: bash
@@ -31,6 +33,7 @@ jobs:
         run: |
           sw_vers
           test "$(uname -m)" = arm64
+          xcodebuild -version
           swift --version
           python3 --version
 

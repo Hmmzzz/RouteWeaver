@@ -16,7 +16,7 @@
 </p>
 
 <p>
-  <a href="docs/DEVELOPMENT.md"><img src="https://img.shields.io/badge/Swift-6.0%2B-F05138?style=flat&amp;logo=swift&amp;logoColor=white" alt="Swift 6.0 及以上工具链"></a>
+  <a href="docs/DEVELOPMENT.md"><img src="https://img.shields.io/badge/Swift-6.2%2B-F05138?style=flat&amp;logo=swift&amp;logoColor=white" alt="Xcode 26 及以上的 Swift 工具链"></a>
   <a href="docs/DEVELOPMENT.md"><img src="https://img.shields.io/badge/UI-SwiftUI-147EFB?style=flat" alt="SwiftUI 原生界面"></a>
   <a href="docs/SECURITY.md"><img src="https://img.shields.io/badge/Routing-IPv4-5865F2?style=flat" alt="IPv4 分流"></a>
   <a href="https://tailscale.com/"><img src="https://img.shields.io/badge/Tailscale-24292F?style=flat&amp;logo=tailscale&amp;logoColor=white" alt="配合 Tailscale 使用"></a>
@@ -69,7 +69,7 @@
 > 当前发布包仅含 **arm64**，采用 ad-hoc 签名，未做 Developer ID 签名或 Apple 公证。首次打开、更新授权及其他常见问题见 [使用指南](docs/USAGE.md)。
 
 <details>
-<summary><strong>从源码构建</strong> · 需要 Swift 6.0+ 工具链</summary>
+<summary><strong>从源码构建</strong> · 需要 Xcode 26+（Swift 6.2+）</summary>
 
 ```sh
 git clone https://github.com/Hmmzzz/RouteWeaver.git

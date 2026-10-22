@@ -59,4 +59,3 @@ bash script/uninstall.sh --app /Applications/RouteWeaver.app --check
 ```sh
 sudo /Applications/RouteWeaver.app/Contents/Helpers/RouteWeaverHelper uninstall-service
 ```
-

@@ -4,7 +4,18 @@ import RouteIPC
 
 /// Only called by the explicitly authorized bundled helper; no privileged action is exposed over IPC.
 enum ServiceInstaller {
+    /// A directory lock has a stable inode and needs no leftover lock file.
+    /// Both install and uninstall hold it through their final verification.
+    static func withLifecycleLock<T>(_ operation: () throws -> T) throws -> T {
+        guard let directory = try UninstallDirectory.openSystem("/Library") else { throw HelperError("系统 Library 目录不存在") }
+        try require(flock(directory.fd, LOCK_EX | LOCK_NB) == 0, "另一个服务安装或卸载正在进行，请稍后重试")
+        defer { _ = flock(directory.fd, LOCK_UN) }
+        return try operation()
+    }
     static func install(appBundlePath: String) throws -> String {
+        try withLifecycleLock { try installLocked(appBundlePath: appBundlePath) }
+    }
+    private static func installLocked(appBundlePath: String) throws -> String {
         try require(geteuid() == 0, "安装后台服务需要系统管理员授权")
         let app = URL(fileURLWithPath: appBundlePath).standardizedFileURL.path
         try require(app == appBundlePath && app.hasSuffix(".app") && app.hasPrefix("/") && !app.utf8.contains(0), "应用安装来源无效")
@@ -84,23 +95,6 @@ enum ServiceInstaller {
             after = try runLaunchctl(["print", label], requireSuccess: false)
         }
         try require(after == 113, "系统尚未卸载旧后台服务（bootout \(result)）；未替换文件")
-    }
-    static func uninstallFiles() throws {
-        try require(geteuid() == 0, "移除后台服务需要系统管理员授权")
-        try stopLaunchDaemon()
-        for path in [ServicePaths.launchDaemon, ServicePaths.executable, ServicePaths.configuration, ServicePaths.directory + "/policy.json"] {
-            var st = stat()
-            if lstat(path, &st) == 0 {
-                try require(st.st_uid == 0 && st.st_mode & S_IFMT == S_IFREG, "拒绝删除未知服务文件")
-                try require(unlink(path) == 0, "无法移除服务文件")
-            } else { try require(errno == ENOENT, "无法检查服务文件") }
-        }
-        var st = stat()
-        if lstat(ServicePaths.socket, &st) == 0 {
-            try require(st.st_mode & S_IFMT == S_IFSOCK, "服务地址不是套接字")
-            try require(unlink(ServicePaths.socket) == 0, "无法移除服务地址")
-        }
-        _ = rmdir(ServicePaths.directory) // Unknown files are intentionally retained.
     }
     private static func validateUserExecutable(_ path: String, owner: uid_t) throws {
         var st = stat()

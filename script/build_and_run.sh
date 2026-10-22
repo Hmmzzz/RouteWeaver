@@ -29,6 +29,8 @@ BIN_DIR="$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path --disable-sandb
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Helpers" "$BUNDLE/Contents/Resources"
 cp "$BIN_DIR/RouteWeaver" "$BUNDLE/Contents/MacOS/RouteWeaver"
 cp "$BIN_DIR/RouteWeaverHelper" "$BUNDLE/Contents/Helpers/RouteWeaverHelper"
+cp "$ROOT_DIR/script/uninstall.sh" "$BUNDLE/Contents/Resources/Uninstall RouteWeaver.command"
+chmod 755 "$BUNDLE/Contents/Resources/Uninstall RouteWeaver.command"
 mkdir -p "$BUNDLE/Contents/Resources/Licenses"
 cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$BUNDLE/Contents/Resources/Licenses/"
 cp -R "$ROOT_DIR/LICENSES" "$BUNDLE/Contents/Resources/Licenses/LICENSES"
@@ -49,8 +51,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>RouteWeaver</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleShortVersionString</key><string>1.0</string>
-<key>CFBundleVersion</key><string>20</string>
+<key>CFBundleShortVersionString</key><string>1.0.1</string>
+<key>CFBundleVersion</key><string>21</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSHighResolutionCapable</key><true/>

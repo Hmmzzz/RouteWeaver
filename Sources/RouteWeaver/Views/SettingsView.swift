@@ -21,6 +21,7 @@ struct SettingsView: View {
                     .padding(20)
                     .background(WeaveStyle.surface, in: RoundedRectangle(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(WeaveStyle.stroke))
+                uninstallSection
                 AboutSection(version: version, author: "Hmmzzz", authorURL: URL(string: "https://github.com/Hmmzzz"))
                 HStack {
                     Spacer()
@@ -48,7 +49,7 @@ struct SettingsView: View {
                 }
                 Spacer(minLength: 8)
                 if store.operation == .repairing { ProgressView().controlSize(.small) }
-                Button(store.serviceInstalled ? "修复服务…" : "安装服务…") { Task { await store.repairService() } }
+                Button(store.serviceReachable ? "检查授权" : (store.serviceInstalled ? "修复服务…" : "安装服务…")) { Task { await store.repairService() } }
                     .buttonStyle(WeaveActionStyle(prominent: !store.serviceInstalled)).disabled(store.isBusy)
             }
             HStack(alignment: .top, spacing: 24) {
@@ -69,7 +70,7 @@ struct SettingsView: View {
                     Button(store.serviceEnabled ? "关闭分流并清理路由" : "清理本应用路由") { Task { await store.rollback() } }.disabled(store.isBusy)
                 }
             }.buttonStyle(WeaveActionStyle()).font(.system(size: 13))
-            Text("安装或更新服务会请求系统管理员授权。更新应用后如无法连接，可在这里重新关联后台服务。")
+            Text("首次安装授权后，同一版本的启动、分流开关和网络恢复均直接复用帮助程序。更换应用构建或修复服务时，可能需要重新授权。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }
         .padding(20)
@@ -82,7 +83,7 @@ struct SettingsView: View {
 
     private var serviceTitle: String {
         if !store.serviceChecked { return "正在检查服务" }
-        if store.serviceReachable { return "服务运行正常" }
+        if store.serviceReachable { return "已授权，可直接使用" }
         return store.serviceInstalled ? "需要检查后台连接" : "尚未安装后台服务"
     }
     private var serviceDescription: String {
@@ -132,6 +133,25 @@ struct SettingsView: View {
                 }.padding(.top, 12)
             }.font(.system(size: 13)).tint(WeaveStyle.accent)
         }
+    }
+
+    private var uninstallSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                sectionTitle("卸载与清理", symbol: "trash", color: .secondary)
+                Spacer()
+                Button("卸载 RouteWeaver…") { store.openUninstaller() }
+                    .buttonStyle(WeaveActionStyle()).disabled(store.isBusy || store.isQuitting)
+            }
+            Text("打开独立卸载工具，确认后恢复网络，并移除后台帮助程序、本机规则与活动记录、缓存及当前 App。删除前会请求管理员授权；无法完成的清理会明确列出。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("请先导出需要保留的规则。你自行导出的文件和项目源码不会被删除。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .background(WeaveStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(WeaveStyle.stroke))
     }
 
     private func settingRow(_ title: String, value: String) -> some View {

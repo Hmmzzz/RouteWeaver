@@ -4,16 +4,23 @@ import XCTest
 /// These lifecycle tests stay on the main actor without suspending until stop().
 /// The queued sampler is cancelled before it can run: no network or IPC is used.
 final class TrafficMonitorDemandTests: XCTestCase {
+    /// UserDefaults keeps empty suite plists even after removing their domain.
+    /// Keep these isolated lifecycle tests entirely in memory.
+    private final class MemoryDefaults: UserDefaults {
+        private var values: [String: Any] = [:]
+        override func object(forKey defaultName: String) -> Any? { values[defaultName] }
+        override func bool(forKey defaultName: String) -> Bool { values[defaultName] as? Bool ?? false }
+        override func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+    }
+
     @MainActor
     private func withMonitor(menuRates: Bool? = nil, _ check: (TrafficMonitor, AppStore, UserDefaults) throws -> Void) throws {
-        let suite = "RouteWeaver.TrafficMonitorDemandTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let defaults = MemoryDefaults()
         if let menuRates { defaults.set(menuRates, forKey: "trafficMonitoringEnabled") }
         let monitor = TrafficMonitor(defaults: defaults)
         let store = AppStore(loadPersistedState: false)
         defer {
             monitor.stop()
-            defaults.removePersistentDomain(forName: suite)
         }
         try check(monitor, store, defaults)
     }

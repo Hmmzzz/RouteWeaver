@@ -38,11 +38,7 @@ do {
         }
         if action == "uninstall-service" {
             try require(args.count == 2, "卸载不接受额外参数")
-            try ServiceInstaller.stopService()
-            let result = try Engine().rollback()
-            emit(result)
-            try require(result.failed == 0 && result.active == 0 && result.pending == 0, "路由尚未全部撤销，保留恢复日志和服务文件")
-            try ServiceInstaller.uninstallFiles()
+            emit(try ServiceUninstaller.uninstall())
             exit(0)
         }
         try require(args.count == 2, "服务不接受额外参数")

@@ -4,6 +4,7 @@ import Network
 import RouteCore
 import RouteIPC
 import CryptoKit
+import AppKit
 
 @MainActor @Observable
 final class AppStore {
@@ -447,7 +448,7 @@ final class AppStore {
         do {
             try await PrivilegedClient.install()
             updateService(try await PrivilegedClient.attachedStatus())
-            notice = "后台服务已连接。"
+            notice = "帮助程序已授权并连接，可直接使用。"
             clearError(from: .installation)
         } catch is AuthorizationCancelled {
             notice = "已取消系统授权，现有分流状态未更改。"
@@ -456,6 +457,16 @@ final class AppStore {
             serviceUnavailable(error)
             setError(error.localizedDescription, source: .installation)
         }
+    }
+
+    func openUninstaller() {
+        guard !isBusy, !isQuitting else { return }
+        let tool = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Uninstall RouteWeaver.command")
+        guard FileManager.default.isExecutableFile(atPath: tool.path), NSWorkspace.shared.open(tool) else {
+            setError("无法打开独立卸载工具。请使用完整应用包，或按 README 中的说明卸载。", source: .installation)
+            return
+        }
+        notice = "卸载工具已打开，请在终端查看清理范围并确认。"
     }
 
     func updateDataset() async {

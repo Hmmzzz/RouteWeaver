@@ -12,7 +12,7 @@
   <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/macOS-14%2B-24292F?style=flat&amp;logo=apple&amp;logoColor=white" alt="macOS 14 及以上"></a>
   <a href="https://www.swift.org/"><img src="https://img.shields.io/badge/Swift-6.0%2B-F05138?style=flat&amp;logo=swift&amp;logoColor=white" alt="Swift 6.0 及以上工具链"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-34A853?style=flat" alt="MIT License"></a>
-  <a href="#开始使用"><img src="https://img.shields.io/badge/Version-1.0-4185F4?style=flat" alt="版本 1.0"></a>
+  <a href="#开始使用"><img src="https://img.shields.io/badge/Version-1.0.1-4185F4?style=flat" alt="版本 1.0.1"></a>
 </p>
 
 [界面预览](#界面预览) · [功能](#功能) · [开始使用](#开始使用) · [安全与隐私](docs/SECURITY.md) · [许可与致谢](#许可与致谢)
@@ -67,7 +67,7 @@
 open dist/RouteWeaver.app
 ```
 
-构建后的 App 与 ZIP 位于 `dist/`。打开应用后启用分流，首次使用会请求管理员授权安装后台服务；更新应用后如提示身份不匹配，可在设置中修复服务。
+构建后的 App 与 ZIP 位于 `dist/`。首次启用分流时，授权安装系统后台帮助程序；同一构建后续启动、开关分流和网络恢复均复用该服务，无需重复管理员授权。设置中的安装/修复也会先检查并复用可连接的服务。更新或重新签名 App 后，若签名身份变化，需要明确授权重新关联；应用不会放宽身份校验来跳过这一步。
 
 > **适用范围**：只管理 IPv4 分流，不提供按应用分流；IPv6 仍由系统和 Tailscale 管理。构建采用本地 ad-hoc 签名，未做 Developer ID 公证。
 
@@ -75,6 +75,7 @@ open dist/RouteWeaver.app
 
 ```sh
 ./script/test.sh
+bash script/test_uninstall.sh
 python3 script/check_publication.py
 ```
 
@@ -97,12 +98,33 @@ python3 script/check_publication.py
 </details>
 
 <details>
-<summary><strong>卸载后台服务</strong></summary>
+<summary><strong>完整卸载与清理</strong></summary>
 
-先关闭分流或选择“退出并恢复网络”，然后执行：
+在设置中打开完整卸载工具。工具会在终端列出删除范围，输入 `UNINSTALL` 并完成管理员授权后，按顺序执行：
+
+1. 授权成功后退出该 App，防止清理期间再次写入配置或启动安装。
+2. 撤销 RouteWeaver 的路由和 DNS，核验网络恢复完成，再移除后台服务、启动项、通信套接字，以及服务配置和路由恢复日志。
+3. 删除本机规则、活动记录、偏好、缓存、窗口状态和命令临时文件，最后删除该 App。
+4. 检查上述文件是否仍存在；任何检查或清理失败都会明确报错，不会显示完成。
+
+不会删除 Tailscale 配置、手动导出的文件、源码目录或独立诊断归档。发现未知文件、符号链接或不安全的权限时会保留并报告；请按提示处理后重试。不要仅将 App 拖入废纸篓，这不会自动移除系统帮助程序。
+
+也可从源码目录针对指定安装位置运行（不要对整个脚本使用 `sudo`）：
 
 ```sh
-sudo /Library/PrivilegedHelperTools/com.routeweaver.helper uninstall-service
+bash script/uninstall.sh --app /Applications/RouteWeaver.app
+```
+
+只读检查用户数据和 App 的删除范围，不请求管理员权限或改变网络：
+
+```sh
+bash script/uninstall.sh --app /Applications/RouteWeaver.app --check
+```
+
+如果只需卸载系统后台服务、保留 App 和用户数据，可运行当前 App 内的帮助程序：
+
+```sh
+sudo /Applications/RouteWeaver.app/Contents/Helpers/RouteWeaverHelper uninstall-service
 ```
 
 </details>

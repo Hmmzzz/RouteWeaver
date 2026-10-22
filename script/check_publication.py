@@ -41,6 +41,16 @@ def check(git, list_files=False):
             raise RuntimeError('Git inspection failed: ' + ' '.join(args[:2]))
         return result.stdout
 
+    # Documentation links to this repository intentionally include its owner.
+    # Exempt only that exact HTTPS URL prefix from the account-name heuristic;
+    # all credential and home-directory checks still inspect the original text.
+    origin = run('config', '--get', 'remote.origin.url', accepted=(0, 1)).decode().strip()
+    github_origin = re.fullmatch(r'(?:https://github\.com/|git@github\.com:)([A-Za-z0-9-]+/[A-Za-z0-9_.-]+)/?', origin)
+    repository_url = None
+    if github_origin:
+        repository = github_origin.group(1).removesuffix('.git')
+        repository_url = re.compile(r'https://github\.com/' + re.escape(repository) + r'''(?:\.git)?(?=[/#?\s"'<>)]|$)''')
+
     candidates = sorted(set(run('ls-files', '--cached', '--others', '--exclude-standard', '-z').split(b'\0')) - {b''})
     issues = []
     probes = [item.encode() for item in REQUIRED_IGNORES]
@@ -81,6 +91,8 @@ def check(git, list_files=False):
         local_user = Path.home().name
         if len(local_user) >= 4 and local_user not in ('root', 'user', 'runner'):
             account_content = content
+            if name.endswith('.md') and repository_url:
+                account_content = repository_url.sub('https://github.com/<repository>', account_content)
             if name == 'Sources/RouteWeaver/Views/SettingsView.swift':
                 # The About author and GitHub profile are explicitly public.
                 # Only this declaration is exempt from the account-name heuristic;

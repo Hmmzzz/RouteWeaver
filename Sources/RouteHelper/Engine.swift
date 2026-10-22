@@ -17,28 +17,43 @@ struct RouteHealth {
 final class Engine {
     private let store: any JournalStoring
     private let table: any RouteTableOperating
-    private let preflight: (ApplyRequest, [ExistingRoute]) throws -> Void
+    private let preflight: (ApplyRequest, [ExistingRoute], RecoveryCancellation) throws -> [ExistingRoute]
     init() throws {
-        store = try SecureJournal(); table = try RouteTable()
-        preflight = { request, snapshot in
-            let interfaces = try verifyTailscale(request)
+        let routeTable = try RouteTable()
+        store = try SecureJournal(); table = routeTable
+        preflight = { request, _, cancellation in
+            let interfaces = try verifyTailscale(request, cancellation: cancellation)
+            try cancellation.throwIfCancelled()
+            let snapshot = try routeTable.readSnapshot()
             try verifyGateway(request, snapshot: snapshot, tailscaleInterfaces: interfaces)
+            return snapshot
         }
     }
     init(store: any JournalStoring, table: any RouteTableOperating,
          preflight: @escaping (ApplyRequest, [ExistingRoute]) throws -> Void = { _, _ in }) {
-        self.store = store; self.table = table; self.preflight = preflight
+        self.store = store; self.table = table
+        self.preflight = { request, snapshot, _ in try preflight(request, snapshot); return snapshot }
+    }
+    init(store: any JournalStoring, table: any RouteTableOperating,
+         cancellablePreflight: @escaping (ApplyRequest, [ExistingRoute], RecoveryCancellation) throws -> Void) {
+        self.store = store; self.table = table
+        self.preflight = { request, snapshot, token in try cancellablePreflight(request, snapshot, token); return snapshot }
     }
     func apply(_ request: ApplyRequest) throws -> Report {
+        try apply(request, cancellation: RecoveryCancellation())
+    }
+    func apply(_ request: ApplyRequest, cancellation: RecoveryCancellation) throws -> Report {
         let start = Date()
+        try cancellation.throwIfCancelled()
         let routes = try validatedRoutes(request)
         var journal = try store.load()
         try validateJournal(journal)
         var snapshot = try table.readSnapshot()
-        try preflight(request, snapshot)
+        snapshot = try preflight(request, snapshot, cancellation)
+        try cancellation.throwIfCancelled()
         let desired = Set(routes.map(\.description))
         var report = Report()
-        try removeRecords(&journal, snapshot: snapshot, report: &report) {
+        try removeRecords(&journal, snapshot: snapshot, report: &report, cancellation: cancellation) {
             !desired.contains($0.cidr) || $0.gateway != request.gateway || $0.interface != request.interface
         }
         if report.failed > 0 {
@@ -47,7 +62,8 @@ final class Engine {
             report.durationMilliseconds = elapsed(start); return report
         }
         snapshot = try table.readSnapshot()
-        try preflight(request, snapshot)
+        snapshot = try preflight(request, snapshot, cancellation)
+        try cancellation.throwIfCancelled()
         let index = makeIndex(snapshot)
         let old = Dictionary(uniqueKeysWithValues: journal.records.map { ($0.cidr, $0) })
         var retained: [RouteRecord] = [], additions: [RouteRecord] = []
@@ -71,9 +87,14 @@ final class Engine {
         journal.records = retained + additions
         // The full write-ahead batch is durable before the first add. Marker
         // flags allow an interrupted successful add to be recovered next time.
+        try cancellation.throwIfCancelled()
         try store.save(journal)
         var successful = Set<String>(), uncertain = Set<String>()
         for record in additions {
+            // Once a batch has a durable intent, finish its accounting before
+            // throwing cancellation. The following serialized rollback can then
+            // remove every route that this interrupted batch actually created.
+            if cancellation.isCancelled { break }
             do {
                 let result = try table.add(record)
                 if result == 0 { successful.insert(record.cidr) }
@@ -104,6 +125,7 @@ final class Engine {
             }
         }
         try store.save(journal)
+        try cancellation.throwIfCancelled()
         summarize(journal, index: final, report: &report)
         report.durationMilliseconds = elapsed(start)
         report.message = report.failed == 0 ? "路由计划已应用并核验；已有冲突路由保持不变" : "部分路由失败；恢复记录已保留，可重试或撤销"
@@ -157,10 +179,13 @@ final class Engine {
             try require(IPv4CIDR.parseAddress(record.gateway) != nil && record.interface.hasPrefix("en") && !suffix.isEmpty && suffix.utf8.allSatisfy { $0 >= 48 && $0 <= 57 } && (0...1).contains(record.markerVersion), "恢复日志中存在无效记录")
         }
     }
-    private func removeRecords(_ journal: inout Journal, snapshot: [ExistingRoute], report: inout Report, shouldRemove: (RouteRecord) -> Bool) throws {
+    private func removeRecords(_ journal: inout Journal, snapshot: [ExistingRoute], report: inout Report,
+                               cancellation: RecoveryCancellation? = nil, shouldRemove: (RouteRecord) -> Bool) throws {
+        try cancellation?.throwIfCancelled()
         let index = makeIndex(snapshot)
         var keep: [RouteRecord] = [], attempted: [RouteRecord] = []
         for record in journal.records {
+            if cancellation?.isCancelled == true { keep.append(record); continue }
             guard shouldRemove(record) else { keep.append(record); continue }
             let exact = try matching(index, record)
             if exact.isEmpty { continue }
@@ -191,6 +216,7 @@ final class Engine {
         }
         journal.records = keep
         try store.save(journal)
+        try cancellation?.throwIfCancelled()
     }
     private func summarize(_ journal: Journal, report: inout Report) throws {
         summarize(journal, index: makeIndex(try table.readSnapshot()), report: &report)

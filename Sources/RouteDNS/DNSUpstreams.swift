@@ -7,16 +7,19 @@ final class DNSHTTPSUpstream: NSObject, URLSessionDataDelegate, @unchecked Senda
     private struct Request {
         var data = Data()
         var accepted = false
-        let completion: (Data?) -> Void
+        let query: DNSQuestion
+        let task: URLSessionDataTask
+        let timer: DispatchWorkItem
+        let completion: (DNSDomesticResult) -> Void
     }
     private let lock = NSLock()
     private var requests: [Int: Request] = [:]
     private var session: URLSession!
     private var stopped = false
 
-    override init() {
+    init(configuration: URLSessionConfiguration = .ephemeral) {
         super.init()
-        let configuration = URLSessionConfiguration.ephemeral
+        let configuration = configuration.copy() as! URLSessionConfiguration
         configuration.timeoutIntervalForRequest = 2.5
         configuration.timeoutIntervalForResource = 3
         configuration.waitsForConnectivity = false
@@ -31,26 +34,42 @@ final class DNSHTTPSUpstream: NSObject, URLSessionDataDelegate, @unchecked Senda
         delegateQueue.qualityOfService = .utility
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: delegateQueue)
     }
-    func lookup(_ query: DNSQuestion, completion: @escaping (DNSAAnswer?) -> Void) {
+    @discardableResult
+    func lookup(_ query: DNSQuestion, timeout: TimeInterval = 3,
+                completion: @escaping (DNSDomesticResult) -> Void) -> DNSCancellation {
+        let cancellation = DNSCancellation()
+        guard timeout.isFinite, timeout > 0 else { completion(.unavailable); return cancellation }
+        let timeout = min(timeout, 3)
+        let deadline = DispatchTime.now() + timeout
         var request = URLRequest(url: URL(string: "https://223.5.5.5/dns-query")!)
         request.httpMethod = "POST"; request.httpBody = query.query(type: 1)
+        request.timeoutInterval = timeout
         request.setValue("application/dns-message", forHTTPHeaderField: "Content-Type")
         request.setValue("application/dns-message", forHTTPHeaderField: "Accept")
         lock.lock()
-        guard !stopped, requests.count < 64 else { lock.unlock(); completion(nil); return }
+        guard !stopped, requests.count < 64 else { lock.unlock(); completion(.unavailable); return cancellation }
         let task = session.dataTask(with: request)
-        requests[task.taskIdentifier] = Request(completion: { response in
-            completion(response.flatMap { DNSWire.aAnswer($0, for: query) })
-        })
-        lock.unlock(); task.resume()
+        let id = task.taskIdentifier
+        let timer = DispatchWorkItem { [weak self] in self?.finish(id, result: .failure, cancelTask: true) }
+        requests[id] = Request(query: query, task: task, timer: timer, completion: completion)
+        lock.unlock()
+        cancellation.setHandler { [weak self] in self?.finish(id, result: .unavailable, cancelTask: true) }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: deadline, execute: timer)
+        task.resume()
+        return cancellation
     }
     func stop() {
-        lock.lock(); stopped = true
-        let callbacks = requests.values.map(\.completion); requests.removeAll(); lock.unlock()
-        session.invalidateAndCancel(); callbacks.forEach { $0(nil) }
+        lock.lock()
+        guard !stopped else { lock.unlock(); return }
+        stopped = true
+        let requests = Array(self.requests.values); self.requests.removeAll(); lock.unlock()
+        requests.forEach { $0.timer.cancel() }
+        session.invalidateAndCancel(); requests.forEach { $0.completion(.unavailable) }
     }
-    private func finish(_ id: Int, result: Data?) {
+    private func finish(_ id: Int, result: DNSDomesticResult, cancelTask: Bool = false) {
         lock.lock(); let request = requests.removeValue(forKey: id); lock.unlock()
+        request?.timer.cancel()
+        if cancelTask { request?.task.cancel() }
         request?.completion(result)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
@@ -58,7 +77,7 @@ final class DNSHTTPSUpstream: NSObject, URLSessionDataDelegate, @unchecked Senda
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               http.mimeType?.lowercased() == "application/dns-message",
               response.expectedContentLength <= DNSWire.maximumResponseSize else {
-            completionHandler(.cancel); finish(dataTask.taskIdentifier, result: nil); return
+            finish(dataTask.taskIdentifier, result: .failure); completionHandler(.cancel); return
         }
         lock.lock(); let present = requests[dataTask.taskIdentifier] != nil
         requests[dataTask.taskIdentifier]?.accepted = true; lock.unlock()
@@ -68,17 +87,46 @@ final class DNSHTTPSUpstream: NSObject, URLSessionDataDelegate, @unchecked Senda
         lock.lock()
         guard var record = requests[dataTask.taskIdentifier], record.accepted,
               record.data.count + data.count <= DNSWire.maximumResponseSize else {
-            lock.unlock(); dataTask.cancel(); finish(dataTask.taskIdentifier, result: nil); return
+            lock.unlock(); finish(dataTask.taskIdentifier, result: .failure, cancelTask: true); return
         }
         record.data.append(data); requests[dataTask.taskIdentifier] = record; lock.unlock()
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         lock.lock(); let record = requests[task.taskIdentifier]; lock.unlock()
-        finish(task.taskIdentifier, result: error == nil && record?.accepted == true ? record?.data : nil)
+        guard let record else { return }
+        if let error {
+            let cancelled = (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled
+            finish(task.taskIdentifier, result: cancelled ? .unavailable : .failure)
+        } else if record.accepted && Self.isValidResponse(record.data, query: record.query) {
+            finish(task.taskIdentifier, result: .response(DNSWire.aAnswer(record.data, for: record.query)))
+        } else {
+            finish(task.taskIdentifier, result: .failure)
+        }
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil); task.cancel(); finish(task.taskIdentifier, result: nil)
+        finish(task.taskIdentifier, result: .failure, cancelTask: true); completionHandler(nil)
+    }
+
+    /// Match the A query actually sent and validate all section boundaries.
+    /// A matching header with a truncated record is not a healthy DNS answer.
+    /// Valid NXDOMAIN, NODATA and other DNS responses remain response(nil).
+    private static func isValidResponse(_ data: Data, query: DNSQuestion) -> Bool {
+        guard DNSWire.matchesResponse(data, request: query.query(type: 1)) else { return false }
+        let bytes = [UInt8](data)
+        var offset = 12
+        let questions = Int(DNSWire.read16(bytes, 4) ?? 0)
+        for _ in 0..<questions {
+            guard DNSWire.readName(bytes, offset: &offset) != nil, offset + 4 <= bytes.count else { return false }
+            offset += 4
+        }
+        let records = [6, 8, 10].reduce(0) { $0 + Int(DNSWire.read16(bytes, $1) ?? 0) }
+        for _ in 0..<records {
+            guard DNSWire.readName(bytes, offset: &offset) != nil,
+                  let length = DNSWire.read16(bytes, offset + 8), offset + 10 + Int(length) <= bytes.count else { return false }
+            offset += 10 + Int(length)
+        }
+        return offset == bytes.count
     }
 }
 
@@ -141,16 +189,29 @@ final class DNSOriginalUpstream {
         self.makeConnection = makeConnection
         queue.setSpecific(key: queueKey, value: 1)
     }
-    func lookup(_ data: Data, transport: DNSClientTransport = .udp, completion: @escaping (Data?) -> Void) {
-        guard DNSWire.isQueryMessage(data) else { completion(nil); return }
+    @discardableResult
+    func lookup(_ data: Data, transport: DNSClientTransport = .udp, timeout: TimeInterval? = nil,
+                completion: @escaping (Data?) -> Void) -> DNSCancellation {
+        let cancellation = DNSCancellation()
+        guard DNSWire.isQueryMessage(data), timeout == nil || (timeout!.isFinite && timeout! > 0) else {
+            completion(nil); return cancellation
+        }
+        let budget = min(self.timeout, timeout ?? self.timeout)
+        let deadline = ProcessInfo.processInfo.systemUptime + budget
+        let id = UUID()
+        cancellation.setHandler { [weak self] in
+            guard let self else { return }
+            self.queue.async { self.jobs[id]?.finish(nil) }
+        }
         queue.async { [self] in
-            guard !self.stopped, self.jobs.count < 64 else { completion(nil); return }
-            let id = UUID()
-            let job = OriginalDNSJob(data: data, transport: transport, queue: self.queue, timeout: self.timeout, makeConnection: self.makeConnection) { [weak self] response in
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard !cancellation.isCancelled, !self.stopped, self.jobs.count < 64, remaining > 0 else { completion(nil); return }
+            let job = OriginalDNSJob(data: data, transport: transport, queue: self.queue, timeout: remaining, makeConnection: self.makeConnection) { [weak self] response in
                 self?.jobs.removeValue(forKey: id); completion(response)
             }
             self.jobs[id] = job; job.start()
         }
+        return cancellation
     }
     func stop() {
         let stop = {

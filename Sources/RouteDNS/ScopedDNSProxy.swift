@@ -22,7 +22,6 @@ public final class ScopedDNSProxy {
     private var failure: ((Error) -> Void)?
     private var startupTimeout: DispatchWorkItem?
     private var peers: [UUID: DNSPeer] = [:]
-    private var activeRequests = 0
 
     public init(port: UInt16 = 53535, directCIDRs: [String], directDomains: [String]) throws {
         guard port > 0 else { throw DNSProxyError.listener("无效的端口") }
@@ -31,9 +30,17 @@ public final class ScopedDNSProxy {
         self.https = https; self.original = original
         do {
             processor = try DNSProcessor(directCIDRs: directCIDRs, directDomains: directDomains,
-                domestic: { query, completion in https.lookup(query, completion: completion) },
-                original: { query, transport, completion in original.lookup(query, transport: transport, completion: completion) })
+                domesticLookup: { query, timeout, completion in https.lookup(query, timeout: timeout, completion: completion) },
+                originalLookup: { query, transport, timeout, completion in original.lookup(query, transport: transport, timeout: timeout, completion: completion) })
         } catch { https.stop(); original.stop(); throw error }
+        queue.setSpecific(key: queueKey, value: 1)
+    }
+    /// Dependency boundary for loopback integration tests. The caller supplies
+    /// the same processor used in production, with controlled upstreams.
+    init(port: UInt16, processor: DNSProcessor) throws {
+        guard port > 0 else { throw DNSProxyError.listener("无效的端口") }
+        self.port = port; self.processor = processor
+        https = DNSHTTPSUpstream(); original = DNSOriginalUpstream()
         queue.setSpecific(key: queueKey, value: 1)
     }
     public func start(completion: @escaping (Result<Void, Error>) -> Void,
@@ -127,7 +134,10 @@ public final class ScopedDNSProxy {
         startupTimeout?.cancel(); startupTimeout = nil
         udp?.cancel(); tcp?.cancel(); udp = nil; tcp = nil
         let peers = Array(peers.values); self.peers.removeAll()
-        for peer in peers { peer.idle?.cancel(); peer.connection.cancel() }
+        for peer in peers {
+            peer.requests.values.forEach { $0.cancel() }; peer.requests.removeAll()
+            peer.idle?.cancel(); peer.connection.cancel()
+        }
         processor.stop(); https.stop(); original.stop()
         completion?(.failure(DNSProxyError.stopped))
     }
@@ -139,6 +149,7 @@ public final class ScopedDNSProxy {
     }
     private func close(_ peer: DNSPeer) {
         guard peers.removeValue(forKey: peer.id) != nil else { return }
+        peer.requests.values.forEach { $0.cancel() }; peer.requests.removeAll()
         peer.idle?.cancel(); peer.connection.cancel()
     }
     private func receiveUDP(_ peer: DNSPeer) {
@@ -170,11 +181,15 @@ public final class ScopedDNSProxy {
         }
     }
     private func advanceTCP(_ peer: DNSPeer) {
-        guard peers[peer.id] != nil, !stopped, !peer.processing else { return }
+        guard peers[peer.id] != nil, !stopped else { return }
+        if peer.processing { receiveTCP(peer); return }
         if peer.buffer.count >= 2, let size = DNSWire.read16([UInt8](peer.buffer), 0) {
             guard size >= 12, size <= DNSWire.maximumQuerySize else { close(peer); return }
             if peer.buffer.count >= Int(size) + 2 {
-                let data = peer.buffer.subdata(in: 2..<(Int(size) + 2)); peer.buffer.removeFirst(Int(size) + 2)
+                let data = Data(peer.buffer.dropFirst(2).prefix(Int(size)))
+                // Data.removeFirst preserves a nonzero startIndex. Rebase the
+                // remainder before parsing another frame on this connection.
+                peer.buffer = Data(peer.buffer.dropFirst(Int(size) + 2))
                 guard DNSWire.isQueryMessage(data) else { close(peer); return }
                 peer.processing = true; touch(peer)
                 process(data, peer: peer) { [weak self, weak peer] response in
@@ -188,30 +203,45 @@ public final class ScopedDNSProxy {
                         else { self.advanceTCP(peer) }
                     })
                 }
+                // Keep a bounded read pending so a reset can cancel upstream
+                // work even while its DNS response is outstanding. A clean
+                // write half-close still permits the pending response.
+                receiveTCP(peer)
                 return
             }
         }
         guard !peer.receivedEOF else { close(peer); return }
-        peer.connection.receive(minimumIncompleteLength: 1, maximumLength: min(8192, DNSWire.maximumQuerySize + 2 - peer.buffer.count)) { [weak self, weak peer] data, _, complete, error in
+        receiveTCP(peer)
+    }
+    private func receiveTCP(_ peer: DNSPeer) {
+        let room = DNSWire.maximumQuerySize + 2 - peer.buffer.count
+        guard peers[peer.id] != nil, !stopped, !peer.receiving, !peer.receivedEOF, room > 0 else { return }
+        peer.receiving = true
+        peer.connection.receive(minimumIncompleteLength: 1, maximumLength: min(8192, room)) { [weak self, weak peer] data, _, complete, error in
             guard let self, let peer, self.peers[peer.id] != nil, !self.stopped else { return }
+            peer.receiving = false
             if let data { peer.buffer.append(data) }
             guard error == nil, peer.buffer.count <= DNSWire.maximumQuerySize + 2 else { self.close(peer); return }
             peer.receivedEOF = complete; self.touch(peer); self.advanceTCP(peer)
         }
     }
     private func process(_ data: Data, peer: DNSPeer, completion: @escaping (Data) -> Void) {
-        guard activeRequests < 64, peer.activity.requests < 8 else { completion(DNSWire.failure(to: data)); return }
-        activeRequests += 1; peer.activity.requests += 1
-        processor.process(data, transport: peer.isTCP ? .tcp : .udp) { [weak self, weak peer] response in
+        // The processor owns both global and per-peer admission. A separate
+        // listener gate would let slow optimization requests consume the slots
+        // reserved for original-only queries before that policy can run.
+        let requestID = UUID()
+        peer.activity.requests += 1
+        let cancellation = processor.process(data, transport: peer.isTCP ? .tcp : .udp, peerID: peer.id) { [weak self, weak peer] response in
             guard let self else { return }
             self.queue.async {
-                self.activeRequests = max(0, self.activeRequests - 1)
                 guard let peer else { return }; peer.activity.requests = max(0, peer.activity.requests - 1)
+                peer.requests.removeValue(forKey: requestID)
                 guard !self.stopped, self.peers[peer.id] != nil else { return }
                 self.touch(peer)
                 completion(response ?? DNSWire.failure(to: data))
             }
         }
+        peer.requests[requestID] = cancellation
     }
 }
 
@@ -222,7 +252,9 @@ private final class DNSPeer {
     var idle: DispatchWorkItem?
     var buffer = Data()
     var processing = false
+    var receiving = false
     var receivedEOF = false
+    var requests: [UUID: DNSCancellation] = [:]
     var activity: DNSPeerActivity
     init(connection: NWConnection, isTCP: Bool) {
         self.connection = connection; self.isTCP = isTCP

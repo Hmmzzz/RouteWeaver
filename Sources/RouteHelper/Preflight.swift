@@ -31,44 +31,108 @@ func validatedRoutes(_ request: ApplyRequest) throws -> [IPv4CIDR] {
     }).sorted()
 }
 
-private final class OutputBox: @unchecked Sendable {
-    let lock = NSLock()
-    var data = Data()
-    var oversized = false
-    func append(_ chunk: Data) { lock.lock(); defer { lock.unlock() }; if data.count + chunk.count <= 4 * 1024 * 1024 { data.append(chunk) } else { oversized = true } }
+/// A private process group includes launchctl/sudo and the actual CLI. Polling
+/// both output and cancellation on the worker avoids an orphaned blocking pipe
+/// reader when a child inherits stdout or ignores SIGTERM.
+func runRecoveryCommand(executable: String, arguments: [String], cancellation: RecoveryCancellation? = nil,
+                        timeout: TimeInterval = 8, maximumOutputBytes: Int = 4 * 1024 * 1024) throws -> Data {
+    try cancellation?.throwIfCancelled()
+    try require(timeout.isFinite && timeout > 0 && maximumOutputBytes > 0, "状态检查参数无效")
+    var descriptors: [Int32] = [0, 0]
+    try require(pipe(&descriptors) == 0, "无法创建状态输出管道")
+    // A launch daemon can start with a standard descriptor closed. Keep pipe
+    // descriptors away from 0/1/2 before constructing ordered spawn actions.
+    for index in descriptors.indices where descriptors[index] < 3 {
+        let replacement = fcntl(descriptors[index], F_DUPFD_CLOEXEC, 3)
+        if replacement < 0 { descriptors.forEach { close($0) }; throw HelperError("无法配置状态输出管道") }
+        close(descriptors[index]); descriptors[index] = replacement
+    }
+    let reader = descriptors[0], writer = descriptors[1]
+    defer { close(reader) }
+    var writerOpen = true
+    defer { if writerOpen { close(writer) } }
+    try require(fcntl(reader, F_SETFD, FD_CLOEXEC) == 0 && fcntl(writer, F_SETFD, FD_CLOEXEC) == 0 &&
+                fcntl(reader, F_SETFL, O_NONBLOCK) == 0, "无法配置状态输出管道")
+    var actions: posix_spawn_file_actions_t?, attributes: posix_spawnattr_t?
+    try require(posix_spawn_file_actions_init(&actions) == 0, "无法创建状态检查进程")
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    try require(posix_spawnattr_init(&attributes) == 0, "无法配置状态检查进程")
+    defer { posix_spawnattr_destroy(&attributes) }
+    try require(posix_spawn_file_actions_adddup2(&actions, writer, STDOUT_FILENO) == 0 &&
+                posix_spawn_file_actions_addclose(&actions, reader) == 0 &&
+                posix_spawn_file_actions_addclose(&actions, writer) == 0 &&
+                posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0) == 0 &&
+                posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0 &&
+                // Do not leak the helper's privileged route socket or service
+                // descriptors into a third-party CLI, even without FD_CLOEXEC.
+                posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0 &&
+                posix_spawnattr_setpgroup(&attributes, 0) == 0, "无法隔离状态检查进程")
+    let argv = ([executable] + arguments).map { strdup($0) }
+    let environment = ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") }
+    defer { argv.forEach { free($0) }; environment.forEach { free($0) } }
+    var argvPointers = argv + [nil], environmentPointers = environment + [nil]
+    var pid: pid_t = 0
+    try cancellation?.throwIfCancelled()
+    let launched = posix_spawn(&pid, executable, &actions, &attributes, &argvPointers, &environmentPointers)
+    try require(launched == 0, "无法启动状态检查：\(String(cString: strerror(launched)))")
+    close(writer); writerOpen = false
+    // Keep the leader unreaped until cleanup, preventing reuse of the process
+    // group identifier while cancellation may still need to kill descendants.
+    defer {
+        kill(-pid, SIGKILL)
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+    }
+    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    var data = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
+    var eof = false
+    while !eof {
+        try cancellation?.throwIfCancelled()
+        try require(ProcessInfo.processInfo.systemUptime < deadline, "Tailscale 状态查询超时")
+        // Bound each read turn so an endless writer cannot starve cancellation.
+        let count = read(reader, &buffer, buffer.count)
+        if count > 0 {
+            try require(data.count <= maximumOutputBytes - count, "Tailscale 状态输出超限")
+            data.append(contentsOf: buffer.prefix(count))
+        } else if count == 0 { eof = true }
+        else if errno != EAGAIN && errno != EINTR { throw HelperError("Tailscale 状态输出读取失败") }
+        else {
+            var descriptor = pollfd(fd: reader, events: Int16(POLLIN | POLLHUP), revents: 0)
+            _ = poll(&descriptor, 1, 20)
+        }
+    }
+    // stdout may close before the process exits. waitid(WNOWAIT) observes exit
+    // without reaping the leader until the process-group cleanup above.
+    var info = siginfo_t()
+    while true {
+        try cancellation?.throwIfCancelled()
+        try require(ProcessInfo.processInfo.systemUptime < deadline, "Tailscale 状态查询超时")
+        let result = waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT)
+        if result == 0 && info.si_pid == pid { break }
+        if result < 0 && errno != EINTR { throw HelperError("无法读取状态检查退出结果") }
+        usleep(20_000)
+    }
+    try require(info.si_code == CLD_EXITED && info.si_status == 0, "Tailscale 状态查询失败")
+    return data
 }
-private func tailscaleStatus(ownerUID user: uid_t) throws -> [String: Any] {
+
+private func tailscaleStatus(ownerUID user: uid_t, cancellation: RecoveryCancellation? = nil) throws -> [String: Any] {
     let paths = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"]
     guard let executable = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { throw HelperError("找不到 Tailscale CLI，无法独立验证 exit node") }
-    let process = Process(), pipe = Pipe(), output = OutputBox(), finished = DispatchSemaphore(value: 0)
+    let command: String, arguments: [String]
     // A read-only preflight runs directly as the logged-in user. An authorized
     // root invocation drops privilege before running third-party CLI code.
     if geteuid() == user {
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["TAILSCALE_BE_CLI=1", executable, "status", "--json"]
+        command = "/usr/bin/env"
+        arguments = ["TAILSCALE_BE_CLI=1", executable, "status", "--json"]
     } else {
         try require(geteuid() == 0, "必须由当前登录用户或已授权的管理员执行检查")
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["asuser", String(user), "/usr/bin/sudo", "-n", "-u", "#\(user)", "--", "/usr/bin/env", "TAILSCALE_BE_CLI=1", executable, "status", "--json"]
+        command = "/bin/launchctl"
+        arguments = ["asuser", String(user), "/usr/bin/sudo", "-n", "-u", "#\(user)", "--", "/usr/bin/env", "TAILSCALE_BE_CLI=1", executable, "status", "--json"]
     }
-    process.standardOutput = pipe
-    process.standardError = FileHandle.nullDevice
-    process.standardInput = FileHandle.nullDevice
-    try process.run()
-    DispatchQueue.global().async {
-        while true {
-            let chunk = pipe.fileHandleForReading.availableData
-            if chunk.isEmpty { break }
-            output.append(chunk)
-        }
-        finished.signal()
-    }
-    let deadline = Date().addingTimeInterval(8)
-    while process.isRunning && Date() < deadline { usleep(20_000) }
-    if process.isRunning { process.terminate(); usleep(100_000); if process.isRunning { kill(process.processIdentifier, SIGKILL) }; throw HelperError("Tailscale 状态查询超时") }
-    try require(finished.wait(timeout: .now() + 1) == .success, "Tailscale 状态输出未完成")
-    try require(process.terminationStatus == 0 && !output.oversized, "Tailscale 状态查询失败")
-    guard let json = try JSONSerialization.jsonObject(with: output.data) as? [String: Any] else { throw HelperError("Tailscale 状态格式无效") }
+    let output = try runRecoveryCommand(executable: command, arguments: arguments, cancellation: cancellation)
+    try cancellation?.throwIfCancelled()
+    guard let json = try JSONSerialization.jsonObject(with: output) as? [String: Any] else { throw HelperError("Tailscale 状态格式无效") }
     return json
 }
 private func tailscaleInterfaces(_ json: [String: Any]) throws -> Set<String> {
@@ -89,8 +153,12 @@ private func tailscaleInterfaces(_ json: [String: Any]) throws -> Set<String> {
     try require(!interfaces.isEmpty, "无法将 Tailscale 身份映射到系统隧道；拒绝猜测其他 VPN 的接口")
     return interfaces
 }
-func verifyTailscale(_ request: ApplyRequest) throws -> Set<String> {
-    let json = try tailscaleStatus(ownerUID: consoleUID())
+func verifyTailscale(_ request: ApplyRequest, cancellation: RecoveryCancellation? = nil) throws -> Set<String> {
+    let user = try consoleUID()
+    let json = try tailscaleStatus(ownerUID: user, cancellation: cancellation)
+    try cancellation?.throwIfCancelled()
+    let currentUser = try consoleUID()
+    try require(currentUser == user, "当前登录用户已经变化")
     guard json["BackendState"] as? String == "Running",
           let exit = json["ExitNodeStatus"] as? [String: Any],
           exit["ID"] as? String == request.exitNodeID, exit["Online"] as? Bool == true else {
@@ -109,11 +177,17 @@ struct NetworkContext: Codable, Equatable {
 }
 
 /// The daemon derives all network identity itself; the GUI submits only CIDRs.
-func discoverNetwork(ownerUID: uid_t) throws -> NetworkContext? {
+func discoverNetwork(ownerUID: uid_t, cancellation: RecoveryCancellation? = nil) throws -> NetworkContext? {
+    try cancellation?.throwIfCancelled()
+    guard (try? consoleUID()) == ownerUID else { return nil }
+    // Avoid invoking the CLI while no physical uplink exists, but never retain
+    // this early observation across the potentially slow CLI query.
+    guard physicalDefault(snapshot: try RouteTable.snapshot()) != nil else { return nil }
+    let json = try tailscaleStatus(ownerUID: ownerUID, cancellation: cancellation)
+    try cancellation?.throwIfCancelled()
     guard (try? consoleUID()) == ownerUID else { return nil }
     let snapshot = try RouteTable.snapshot()
     guard let physical = physicalDefault(snapshot: snapshot), let physicalGateway = physical.gateway else { return nil }
-    let json = try tailscaleStatus(ownerUID: ownerUID)
     guard json["BackendState"] as? String == "Running",
           let exit = json["ExitNodeStatus"] as? [String: Any],
           let id = exit["ID"] as? String, !id.isEmpty,

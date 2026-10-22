@@ -21,10 +21,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      ROUTEWEAVER_BUILD_ROOT: ${{ runner.temp }}/routeweaver-build
-      ROUTEWEAVER_DIST_ROOT: ${{ runner.temp }}/routeweaver-dist
-      ROUTEWEAVER_BUILD_CONFIGURATION: release
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,6 +50,10 @@ jobs:
       # Build and sign locally; do not launch the app, install the helper,
       # run live network validation, or publish release artifacts from CI.
       - name: Build release app and verify signature
+        env:
+          ROUTEWEAVER_BUILD_ROOT: ${{ runner.temp }}/routeweaver-build
+          ROUTEWEAVER_DIST_ROOT: ${{ runner.temp }}/routeweaver-dist
+          ROUTEWEAVER_BUILD_CONFIGURATION: release
         run: |
           ./script/build_and_run.sh --build-only
           codesign --verify --deep --strict "$ROUTEWEAVER_DIST_ROOT/RouteWeaver.app"

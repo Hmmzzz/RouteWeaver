@@ -12,7 +12,7 @@
   <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/macOS-14%2B-24292F?style=flat&amp;logo=apple&amp;logoColor=white" alt="macOS 14 及以上"></a>
   <a href="https://www.swift.org/"><img src="https://img.shields.io/badge/Swift-6.0%2B-F05138?style=flat&amp;logo=swift&amp;logoColor=white" alt="Swift 6.0 及以上工具链"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-34A853?style=flat" alt="MIT License"></a>
-  <a href="#开始使用"><img src="https://img.shields.io/badge/Version-1.0.1-4185F4?style=flat" alt="版本 1.0.1"></a>
+  <a href="#开始使用"><img src="https://img.shields.io/badge/Version-1.0.2-4185F4?style=flat" alt="版本 1.0.2"></a>
 </p>
 
 [界面预览](#界面预览) · [功能](#功能) · [开始使用](#开始使用) · [安全与隐私](docs/SECURITY.md) · [许可与致谢](#许可与致谢)

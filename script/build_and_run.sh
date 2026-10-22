@@ -51,13 +51,19 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>RouteWeaver</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleShortVersionString</key><string>1.0.1</string>
-<key>CFBundleVersion</key><string>21</string>
+<key>CFBundleShortVersionString</key><string>1.0.2</string>
+<key>CFBundleVersion</key><string>22</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
+# Release symbols can contain absolute build-machine paths. Strip debug symbols
+# from the copied executables before signing; keep debug builds available to LLDB.
+if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
+    /usr/bin/strip -S "$BUNDLE/Contents/MacOS/RouteWeaver"
+    /usr/bin/strip -S "$BUNDLE/Contents/Helpers/RouteWeaverHelper"
+fi
 # File Provider can attach FinderInfo to generated bundles in Documents.
 # Remove only signing-incompatible metadata from our build output.
 /usr/bin/xattr -dr com.apple.FinderInfo "$BUNDLE" 2>/dev/null || true

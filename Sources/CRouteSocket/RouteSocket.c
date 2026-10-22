@@ -34,6 +34,14 @@ int rw_snapshot(RWRoute **routes, size_t *count) {
     size_t capacity = size / sizeof(struct rt_msghdr) + 1;
     RWRoute *result = calloc(capacity, sizeof(RWRoute));
     if (!result) { free(data); return ENOMEM; }
+    /* A route dump usually has thousands of routes on just a few interfaces.
+       if_indextoname performs a system interface lookup; reuse its result only
+       within this dump, including an empty name when an interface disappeared.
+       Never retain names across snapshots: interface indices can be reused.
+       The bounded cache falls back to the original lookup when it fills. */
+    struct { unsigned int index; char name[IF_NAMESIZE]; } interfaces[64] = {0};
+    size_t interface_count = 0;
+    _Static_assert(sizeof(result[0].interface_name) >= IF_NAMESIZE, "Interface name buffer too small");
     char *end = data + size;
     for (char *p = data; p < end;) {
         if ((size_t)(end-p) < sizeof(struct rt_msghdr)) { free(data); free(result); return EINVAL; }
@@ -58,7 +66,20 @@ int rw_snapshot(RWRoute **routes, size_t *count) {
             r->gateway = r->gateway_is_ipv4 ? ipv4(a[RTAX_GATEWAY]) : 0;
             r->flags = h->rtm_flags;
             r->interface_index = h->rtm_index;
-            if_indextoname(h->rtm_index, r->interface_name);
+            size_t i = 0;
+            while (i < interface_count && interfaces[i].index != h->rtm_index) i++;
+            if (i < interface_count) {
+                memcpy(r->interface_name, interfaces[i].name, sizeof(interfaces[i].name));
+            } else if (interface_count < sizeof(interfaces) / sizeof(interfaces[0])) {
+                interfaces[i].index = h->rtm_index;
+                if (if_indextoname(h->rtm_index, interfaces[i].name) == NULL)
+                    memset(interfaces[i].name, 0, sizeof(interfaces[i].name));
+                memcpy(r->interface_name, interfaces[i].name, sizeof(interfaces[i].name));
+                interface_count++;
+            } else {
+                if (if_indextoname(h->rtm_index, r->interface_name) == NULL)
+                    memset(r->interface_name, 0, sizeof(r->interface_name));
+            }
         }
         p += h->rtm_msglen;
     }

@@ -121,3 +121,7 @@ RouteWeaver 只管理 **IPv4 分流**，不提供按应用分流；IPv6 仍由�
 分流思路与 `PF_ROUTE` 批量路由方案参考了 **[leolovenet/tailscale-routes](https://github.com/leolovenet/tailscale-routes)**，特别感谢原作者。
 
 数据来源包括 APNIC 与 domain-list-community；设计与技术参考及各自使用范围见 [第三方说明](THIRD_PARTY_NOTICES.md)。
+
+## 社区
+
+[LINUX DO](https://linux.do/) · 真诚、友善、团结、专业的技术社区。

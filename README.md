@@ -11,7 +11,7 @@
 <p>
   <a href="#快速开始"><img src="https://img.shields.io/badge/macOS-14%2B-24292F?style=flat&amp;logo=apple&amp;logoColor=white" alt="macOS 14 及以上"></a>
   <a href="#快速开始"><img src="https://img.shields.io/badge/CPU-arm64-24292F?style=flat" alt="发布包架构 arm64，适用于 Apple Silicon"></a>
-  <a href="https://github.com/Hmmzzz/RouteWeaver/releases/tag/v1.0.3"><img src="https://img.shields.io/badge/Version-1.0.3-4185F4?style=flat" alt="版本 1.0.3"></a>
+  <a href="https://github.com/Hmmzzz/RouteWeaver/releases/tag/v1.0.4"><img src="https://img.shields.io/badge/Version-1.0.4-4185F4?style=flat" alt="版本 1.0.4"></a>
   <a href="THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/License-MIT%20%2B%20APSL--2.0-34A853?style=flat" alt="MIT and APSL 2.0 components"></a>
 </p>
 

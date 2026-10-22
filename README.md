@@ -11,8 +11,8 @@
 <p>
   <a href="#快速开始"><img src="https://img.shields.io/badge/macOS-14%2B-24292F?style=flat&amp;logo=apple&amp;logoColor=white" alt="macOS 14 及以上"></a>
   <a href="#快速开始"><img src="https://img.shields.io/badge/CPU-arm64-24292F?style=flat" alt="发布包架构 arm64，适用于 Apple Silicon"></a>
-  <a href="https://github.com/Hmmzzz/RouteWeaver/releases/tag/v1.0.2"><img src="https://img.shields.io/badge/Version-1.0.2-4185F4?style=flat" alt="版本 1.0.2"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-34A853?style=flat" alt="MIT License"></a>
+  <a href="https://github.com/Hmmzzz/RouteWeaver/releases/tag/v1.0.3"><img src="https://img.shields.io/badge/Version-1.0.3-4185F4?style=flat" alt="版本 1.0.3"></a>
+  <a href="THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/License-MIT%20%2B%20APSL--2.0-34A853?style=flat" alt="MIT and APSL 2.0 components"></a>
 </p>
 
 <p>
@@ -105,12 +105,18 @@ RouteWeaver 只管理 **IPv4 分流**，不提供按应用分流；IPv6 仍由�
 | 管理员权限、DNS 与隐私边界 | [安全与隐私](docs/SECURITY.md) |
 | IP 网段、域名名单与重建方法 | [数据来源](docs/DATA.md) |
 | 构建、测试与项目结构 | [开发指南](docs/DEVELOPMENT.md) |
+| 提交代码、问题反馈与审阅约定 | [贡献指南](CONTRIBUTING.md) |
+| 私密报告漏洞与安全维护范围 | [漏洞报告](SECURITY.md) |
+| 第三方代码来源与许可 | [代码来源](docs/PROVENANCE.md) |
+| 打包与发布检查 | [发布指南](docs/RELEASING.md) |
 
 欢迎通过 [Issues](https://github.com/Hmmzzz/RouteWeaver/issues) 反馈普通使用问题。提交日志或截图前，请按 [脱敏说明](docs/SECURITY.md#本地资料与问题反馈) 移除私人信息。
 
+安全漏洞请使用 [漏洞报告流程](SECURITY.md)，避免在公开问题中披露细节。
+
 ## 许可与致谢
 
-原创代码采用 [MIT License](LICENSE)，第三方数据保留各自许可。
+原创代码采用 [MIT License](LICENSE)；路由统计 ABI 头文件 `Sources/CRouteStatistics/NetworkStatisticsABI.h` 采用 [APSL 2.0](LICENSES/APSL-2.0.txt)，第三方数据保留各自许可。当前打包脚本会随 App 附上该 APSL 组件的修改源码与许可证，范围及路径见 [第三方说明](THIRD_PARTY_NOTICES.md)。
 
 分流思路与 `PF_ROUTE` 批量路由方案参考了 **[leolovenet/tailscale-routes](https://github.com/leolovenet/tailscale-routes)**，特别感谢原作者。
 

@@ -34,6 +34,12 @@ chmod 755 "$BUNDLE/Contents/Resources/Uninstall RouteWeaver.command"
 mkdir -p "$BUNDLE/Contents/Resources/Licenses"
 cp "$ROOT_DIR/LICENSE" "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$BUNDLE/Contents/Resources/Licenses/"
 cp -R "$ROOT_DIR/LICENSES" "$BUNDLE/Contents/Resources/Licenses/LICENSES"
+mkdir -p "$BUNDLE/Contents/Resources/Licenses/Source"
+cp "$ROOT_DIR/Sources/CRouteStatistics/NetworkStatisticsABI.h" "$BUNDLE/Contents/Resources/Licenses/Source/"
+cp "$ROOT_DIR/Sources/CRouteStatistics/RouteStatistics.c" "$BUNDLE/Contents/Resources/Licenses/Source/"
+cp -R "$ROOT_DIR/Sources/CRouteStatistics/include" "$BUNDLE/Contents/Resources/Licenses/Source/include"
+cp "$ROOT_DIR/LICENSES/CRouteStatistics-SOURCE.md" "$BUNDLE/Contents/Resources/Licenses/Source/README.md"
+cp "$ROOT_DIR/Package.swift" "$ROOT_DIR/script/build_and_run.sh" "$BUNDLE/Contents/Resources/Licenses/Source/"
 "$ROOT_DIR/script/build_icon.sh" "$BUNDLE/Contents/Resources/AppIcon.icns"
 # Keep resource bundles in Contents/Resources so the app seal remains valid.
 if [[ -d "$BIN_DIR/RouteWeaver_RouteWeaver.bundle" ]]; then
@@ -51,8 +57,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>RouteWeaver</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleShortVersionString</key><string>1.0.2</string>
-<key>CFBundleVersion</key><string>22</string>
+<key>CFBundleShortVersionString</key><string>1.0.3</string>
+<key>CFBundleVersion</key><string>23</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSHighResolutionCapable</key><true/>

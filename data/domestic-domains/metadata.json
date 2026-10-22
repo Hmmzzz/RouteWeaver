@@ -79,5 +79,17 @@
   "license_path": "../../LICENSES/domain-list-community.txt",
   "candidate_file": "domains.txt",
   "provenance_file": "provenance.json",
-  "omissions_file": "omissions.json"
+  "omissions_file": "omissions.json",
+  "public_suffix_list": {
+    "source_repository": "https://github.com/publicsuffix/list",
+    "source_commit": "5dd321ffe02039e2431382a095cf80e27ff5eb94",
+    "source_file": "public_suffix_list.dat",
+    "source_file_sha256": "9b4827a9e428a0192a9ea0a6b7804a4cc653d5f39a03456d3b17447b86d78de9",
+    "export_url": "https://publicsuffix.org/list/public_suffix_list.dat",
+    "export_version": "2026-10-20_08-40-56_UTC",
+    "export_sha256": "8228e4bdac6024c058a1e67859157e468a2613b826b53de0e5cae298e1b70755",
+    "export_reconstruction_script": "../../script/prepare_public_suffix_list.py",
+    "license": "MPL-2.0",
+    "included_in_distribution": false
+  }
 }

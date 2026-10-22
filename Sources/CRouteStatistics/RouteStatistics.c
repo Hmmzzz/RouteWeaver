@@ -18,42 +18,15 @@
 #include <time.h>
 #include <unistd.h>
 
-/*
- * ABI layouts independently declared from Apple's published XNU interfaces:
- * https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/ntstat.h
- * https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/ntstat.c
- * These are private interfaces, not an SDK compatibility guarantee. Exact
- * message lengths and source identity are checked; incompatibility is unknown
- * data, never a zero rate. One source is registered and acknowledged at a time:
- * ADD_ALL can exhaust the receive queue before all routes are registered.
- */
-typedef struct { uint64_t context; uint32_t type; uint16_t length, flags; } StatsHeader;
-typedef union { struct sockaddr_in v4; struct sockaddr_in6 v6; } StatsAddress;
-typedef struct {
-    StatsHeader header;
-    uint32_t provider, reserved;
-    StatsAddress destination, mask;
-    uint32_t interface_index;
-} AddRequest;
-typedef struct { StatsHeader header; uint64_t reference; } QueryRequest;
-typedef struct {
-    uint64_t identifier, parent_identifier, gateway_identifier;
-    StatsAddress destination, mask, gateway;
-    uint32_t interface_index, flags, reserved;
-} RouteDescription;
+/* Private XNU wire layouts, adapted under APSL 2.0 in this header.
+ * Exact lengths and identity are checked; incompatible data stays unknown.
+ * Register sources individually to avoid overflowing the receive queue.
+ * The adapted source ships in Contents/Resources/Licenses/Source/ alongside
+ * its license; see THIRD_PARTY_NOTICES.md for scope and source availability. */
+#include "NetworkStatisticsABI.h"
+
 typedef struct { uint64_t reference; size_t index; } ReferenceIndex;
 
-_Static_assert(sizeof(StatsHeader) == 16, "Unexpected nstat header ABI");
-_Static_assert(sizeof(AddRequest) == 88, "Unexpected route add ABI");
-_Static_assert(sizeof(QueryRequest) == 24, "Unexpected query ABI");
-_Static_assert(sizeof(RouteDescription) == 120, "Unexpected route description ABI");
-_Static_assert(offsetof(RouteDescription, destination) == 24, "Unexpected destination offset");
-_Static_assert(offsetof(RouteDescription, interface_index) == 108, "Unexpected interface offset");
-
-enum { StatsSuccess = 0, StatsError = 1, StatsAdd = 1001,
-       StatsQuery = 1004, StatsDescribe = 1005, StatsAdded = 10001,
-       StatsDescription = 10003, StatsCounts = 10004,
-       StatsProviderRoute = 1, StatsAggregate = 1, StatsContinuation = 2 };
 #define STATS_MAX_TARGETS 20000U
 #define STATS_BUFFER_SIZE 65536U
 #define STATS_MAX_TIMEOUT_MS 10000U

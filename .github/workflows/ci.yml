@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS arm64 checks
+    runs-on: macos-15
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      ROUTEWEAVER_BUILD_ROOT: ${{ runner.temp }}/routeweaver-build
+      ROUTEWEAVER_DIST_ROOT: ${{ runner.temp }}/routeweaver-dist
+      ROUTEWEAVER_BUILD_CONFIGURATION: release
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show build environment
+        run: |
+          sw_vers
+          test "$(uname -m)" = arm64
+          swift --version
+          python3 --version
+
+      - name: Check shell syntax and public files
+        run: |
+          for script in script/*.sh; do
+            bash -n "$script"
+          done
+          python3 script/check_publication.py
+
+      - name: Run Swift tests and route snapshot fixtures
+        run: ./script/test.sh
+
+      - name: Run uninstall fixtures
+        run: bash script/test_uninstall.sh
+
+      # Build and sign locally; do not launch the app, install the helper,
+      # run live network validation, or publish release artifacts from CI.
+      - name: Build release app and verify signature
+        run: |
+          ./script/build_and_run.sh --build-only
+          codesign --verify --deep --strict "$ROUTEWEAVER_DIST_ROOT/RouteWeaver.app"
+          test -s "$ROUTEWEAVER_DIST_ROOT/RouteWeaver-macOS.zip"

@@ -2,6 +2,8 @@
 
 [返回 README](../README.md) · [数据来源](DATA.md)
 
+提交代码前请阅读 [贡献指南](../CONTRIBUTING.md)。自动检查范围见 [CI 工作流](../.github/workflows/ci.yml)，漏洞报告方式见 [安全政策](../SECURITY.md)。
+
 ## 构建环境
 
 - macOS 14 或更新版本。

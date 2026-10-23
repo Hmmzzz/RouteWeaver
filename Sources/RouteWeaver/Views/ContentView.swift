@@ -1,8 +1,13 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Bindable var store: AppStore
     @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var showProfileExport = false
+    @State private var showProfileReloadConfirmation = false
+    @State private var profileExportDocument = RulesDocument(text: "")
+    @State private var profileExportError: String?
     @FocusState private var focusedPage: AppSection?
 
     var body: some View {
@@ -46,7 +51,8 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 250)
         } detail: {
             VStack(spacing: 0) {
-                if let error = store.lastError { errorBanner(error) }
+                if let message = store.profileRecoveryMessage { profileRecoveryBanner(message) }
+                if let error = store.lastError, error != store.profileRecoveryMessage { errorBanner(error) }
                 Group {
                     switch store.selection {
                     case .overview: OverviewView(store: store)
@@ -75,6 +81,21 @@ struct ContentView: View {
         .defaultFocus($focusedPage, .overview)
         .toolbarBackground(WeaveStyle.background, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
+        .fileExporter(isPresented: $showProfileExport, document: profileExportDocument,
+                      contentType: .json, defaultFilename: "routeweaver-unsaved-rules.json") { result in
+            if case .failure(let error) = result {
+                let cocoaError = error as NSError
+                if cocoaError.domain != NSCocoaErrorDomain || cocoaError.code != NSUserCancelledError {
+                    profileExportError = error.localizedDescription
+                }
+            }
+        }
+        .confirmationDialog("读取磁盘上的最新配置？", isPresented: $showProfileReloadConfirmation, titleVisibility: .visible) {
+            Button("读取磁盘版本", role: .destructive) { store.reloadProfile() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("这会替换窗口中尚未保存的规则和活动记录。请先导出需要保留的规则。读取配置不会应用路由。")
+        }
     }
 
     private func navigationItem(_ section: AppSection, title: String, symbol: String) -> some View {
@@ -109,6 +130,33 @@ struct ContentView: View {
                 .buttonStyle(WeaveQuietStyle(cornerRadius: 8)).foregroundStyle(.secondary).help("收起提示")
                 .accessibilityLabel("收起错误提示")
         }
+        .padding(.horizontal, 28).padding(.vertical, 14)
+        .background(.orange.opacity(0.08))
+    }
+
+    private func profileRecoveryBanner(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("本机配置尚未保存", systemImage: "exclamationmark.triangle.fill")
+                .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+            Text(message).font(.callout).textSelection(.enabled)
+            Text("当前规则保留在这个窗口中。请先导出需要保留的规则，再读取磁盘版本继续编辑。")
+                .font(.caption).foregroundStyle(.secondary)
+            if let profileExportError {
+                Text("导出失败：" + profileExportError).font(.caption).foregroundStyle(.red)
+            }
+            HStack(spacing: 10) {
+                Button("导出当前规则…") {
+                    profileExportError = nil
+                    profileExportDocument = RulesDocument(text: store.exportRules())
+                    showProfileExport = true
+                }
+                Button("读取磁盘版本…") { showProfileReloadConfirmation = true }
+            }
+            .buttonStyle(WeaveActionStyle(tint: .orange))
+            .disabled(store.isBusy || store.isQuitting)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 28).padding(.vertical, 14)
         .background(.orange.opacity(0.08))
     }

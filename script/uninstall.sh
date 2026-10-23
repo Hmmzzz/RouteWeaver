@@ -59,6 +59,10 @@ rw_check_profile() {
     for entry in ${children[@]+"${children[@]}"}; do
         case "${entry##*/}" in
             profile.json|cn-ipv4.txt|.DS_Store) [[ -f "$entry" && ! -L "$entry" ]] || return 1 ;;
+            .profile.lock)
+                [[ -f "$entry" && ! -L "$entry" && "$(/usr/bin/stat -f %Lp "$entry")" == 600 && "$(/usr/bin/stat -f %l "$entry")" == 1 ]] || {
+                    rw_fail "配置锁类型或权限异常：$entry"; return 1;
+                } ;;
             *) rw_fail "配置目录含未知文件，请先移出后重试：$entry"; return 1 ;;
         esac
     done

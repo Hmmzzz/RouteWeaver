@@ -32,6 +32,7 @@ struct DNSDirectNetworks {
 enum DNSClientTransport: Equatable { case udp, tcp }
 
 final class DNSProcessor {
+    static let maximumRequestsPerPeer = 8
     typealias DomesticLookup = (DNSQuestion, @escaping (DNSAAnswer?) -> Void) -> Void
     typealias OriginalLookup = (Data, DNSClientTransport, @escaping (Data?) -> Void) -> Void
     typealias CancellableDomesticLookup = (DNSQuestion, TimeInterval, @escaping (DNSDomesticResult) -> Void) -> DNSCancellation
@@ -174,7 +175,7 @@ final class DNSProcessor {
             let peerRequests = peerID.map { peer in requests.values.filter { $0.peerID == peer } } ?? []
             guard !stopped, requests.count < 64,
                   !optimization || requests.values.filter(\.optimization).count < 48,
-                  peerID == nil || (peerRequests.count < 8 && (!optimization || peerRequests.filter(\.optimization).count < 6)) else {
+                  peerID == nil || (peerRequests.count < Self.maximumRequestsPerPeer && (!optimization || peerRequests.filter(\.optimization).count < 6)) else {
                 completionQueue.async { completion(DNSWire.failure(to: data)) }; return
             }
             let timer = DispatchWorkItem { [weak self] in self?.finish(id, DNSWire.failure(to: data)) }

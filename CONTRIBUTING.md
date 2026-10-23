@@ -21,13 +21,13 @@ python3 script/check_publication.py
 ./script/build_and_run.sh --build-only
 ```
 
-`test.sh` 包含 Swift 测试和模拟路由快照测试；卸载 fixture 使用隔离临时目录。`--build-only` 只生成应用和 ZIP，不启动应用。纯文档改动至少执行公开文件检查并检查链接；未运行的检查请在 PR 中说明。
+`test.sh` 包含 Swift 测试、模拟路由快照、C 网络统计协议、Helper 非法输入和诊断客户端离线会话测试；卸载 fixture 使用隔离临时目录。`--build-only` 只生成应用和 ZIP，不启动应用。纯文档改动至少执行公开文件检查并检查链接；未运行的检查请在 PR 中说明。
 
 `script/validate_live_*.py` 会真实修改网络，只能在理解脚本及影响的测试环境中手动运行。单元测试通过不代表真实分流、系统权限或 Helper 安装流程已验证。
 
 ## CI 范围
 
-[CI 工作流](.github/workflows/ci.yml) 在 `main` 推送、PR 和手动触发时，使用 GitHub 的 `macos-15` arm64 runner 检查脚本语法、公开文件、Swift 测试、路由快照与卸载 fixture，并构建 Release 应用及验证 ad-hoc 签名。工作流不启动应用、不安装 Helper、不执行实时网络验证，也不上传发布包。
+[CI 工作流](.github/workflows/ci.yml) 在 `main` 推送、PR 和手动触发时，使用 GitHub 的 `macos-15` arm64 runner 检查脚本语法、公开文件、Swift 测试、路由快照、C 网络统计协议、Helper 非法输入、诊断客户端离线会话和卸载 fixture，并构建 Release 应用及验证 ad-hoc 签名。工作流不启动应用、不安装 Helper、不执行实时网络验证，也不上传发布包。
 
 当前 CI 只覆盖 arm64；Intel Mac 与实际网络场景仍需单独验证。每次运行结果见仓库 Actions 页面。
 

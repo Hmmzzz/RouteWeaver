@@ -22,13 +22,14 @@ protocol RecoveryEngine {
     func apply(_ request: ApplyRequest) throws -> Report
     func apply(_ request: ApplyRequest, cancellation: RecoveryCancellation) throws -> Report
     func rollback() throws -> Report
-    func inspectHealth() throws -> RouteHealth
+    func inspectHealth(desiredRoutes: [String]) throws -> RouteHealth
 }
 extension RecoveryEngine {
     func apply(_ request: ApplyRequest, cancellation: RecoveryCancellation) throws -> Report {
         try cancellation.throwIfCancelled()
         return try apply(request)
     }
+    func inspectHealth() throws -> RouteHealth { try inspectHealth(desiredRoutes: []) }
 }
 extension Engine: RecoveryEngine {}
 protocol PolicyStoring {
@@ -308,7 +309,8 @@ final class RecoveryCoordinator {
                 currentNetwork = try result.get(); checkedAt = Date()
                 if previous != currentNetwork?.fingerprint { appliedPlan = nil; machine.invalidateTopology() }
                 if currentNetwork != nil && machine.phase == .active {
-                    runWork(.health, operation: { [engine] _ in try engine.inspectHealth() }) { [self] result in
+                    let desired = appliedPlan.flatMap { $0.fingerprint == currentNetwork?.fingerprint ? $0.routes : nil } ?? []
+                    runWork(.health, operation: { [engine] _ in try engine.inspectHealth(desiredRoutes: desired) }) { [self] result in
                         do { evaluateAction(health: try result.get()) }
                         catch { observationFailed(error) }
                     }
@@ -318,7 +320,8 @@ final class RecoveryCoordinator {
     }
     private func evaluateAction(health: RouteHealth?) {
         let action = machine.decide(fingerprint: currentNetwork?.fingerprint,
-                                    repairNeeded: health?.hasMissingOwnedRoutes ?? false, now: now)
+                                    repairNeeded: health?.needsRepair ?? false, now: now)
+        if let health { publishHealth(health.report) }
         if action == .rollback {
             performRollback { [self] in evaluateAction(health: nil) }
         } else if action == .apply, let network = currentNetwork {
@@ -344,8 +347,8 @@ final class RecoveryCoordinator {
                 }
                 finishCycle()
             }
-        } else if let health {
-            publishHealth(health.report); finishCycle()
+        } else if health != nil {
+            finishCycle()
         } else {
             runWork(.health, operation: { [engine] _ in try engine.inspectHealth() }) { [self] result in
                 do { publishHealth(try result.get().report); finishCycle() }
@@ -355,6 +358,7 @@ final class RecoveryCoordinator {
     }
     private func publishHealth(_ health: Report) {
         report.active = health.active; report.pending = health.pending; report.verified = health.verified
+        report.skipped = health.skipped
         checkedAt = Date()
         if currentNetwork == nil { report.message = "等待物理网络与在线 exit node；已停止自动添加路由" }
     }

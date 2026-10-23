@@ -44,7 +44,7 @@ jobs:
           done
           python3 script/check_publication.py
 
-      - name: Run Swift tests and route snapshot fixtures
+      - name: Run Swift, C protocol, helper input, and diagnostic session checks
         run: ./script/test.sh
 
       - name: Run uninstall fixtures

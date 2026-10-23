@@ -24,6 +24,10 @@ struct StatusPopover: View {
                 connection
                 trafficDashboard
                 routingDetails
+                if store.profileRecoveryMessage != nil {
+                    Button("配置未保存 · 查看规则") { show(.rules) }
+                        .buttonStyle(StatusPanelButtonStyle(tint: .orange))
+                }
                 if let action = store.connection.primaryAction {
                     Button(action.title) { perform(action) }
                         .buttonStyle(StatusPanelButtonStyle(tint: directColor))
@@ -115,7 +119,7 @@ struct StatusPopover: View {
     private var routingDetails: some View {
         VStack(spacing: 8) {
             detailRow("直连规则", value: store.activeRouteCount.map { "\($0.formatted()) 条已核验" } ?? "待确认")
-            detailRow("国内解析", value: store.serviceReachable ? (store.serviceDNSActive ? "已启用" : "未启用") : "待确认")
+            detailRow("国内解析", value: store.dnsStatusText).help(store.serviceDNSMessage)
             detailRow("物理出口", value: store.usesConfirmedServiceNetwork ? (store.serviceInterface ?? "待确认") : "—")
             if store.hasUnappliedChanges {
                 HStack {

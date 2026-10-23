@@ -33,9 +33,11 @@ bash script/test_uninstall.sh
 python3 script/check_publication.py
 ```
 
-`test.sh` 运行 Swift 测试和路由快照 fixture；卸载 fixture 在隔离临时目录中验证清理逻辑。公开文件检查用于排查常见敏感内容，不能替代对暂存区、Git 历史、发布附件及新增截图的审阅。
+`test.sh` 运行 Swift 测试、路由快照 fixture、C 网络统计协议检查、Helper 非法输入检查，以及诊断客户端的离线会话测试；卸载 fixture 在隔离临时目录中验证清理逻辑。公开文件检查用于排查常见敏感内容，不能替代对暂存区、Git 历史、发布附件及新增截图的审阅。
 
 `script/validate_live_*.py` 会真实修改网络，只在理解脚本且已关闭分流的测试环境中手动运行。
+
+实机脚本通过已签名 App 的 `--service-session` 保持同一客户端进程，确认路由和 DNS 已清理后才显式 attach，结束时使用 `stopOwned` 清理自身会话。请先退出 GUI。恢复脚本要求 Helper 重启后先清理旧路由并禁用策略，再由原客户端显式 attach 和 apply；不会把重启后的自动启用当作成功。标准输入关闭时，诊断进程还会尝试一次自身会话清理。
 
 ## 项目结构
 

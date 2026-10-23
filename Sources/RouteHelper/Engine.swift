@@ -9,6 +9,13 @@ private typealias RouteIndex = [RouteKey: [ExistingRoute]]
 struct RouteHealth {
     let report: Report
     let hasMissingOwnedRoutes: Bool
+    let hasMissingDesiredRoutes: Bool
+    var needsRepair: Bool { hasMissingOwnedRoutes || hasMissingDesiredRoutes }
+
+    init(report: Report, hasMissingOwnedRoutes: Bool, hasMissingDesiredRoutes: Bool = false) {
+        self.report = report; self.hasMissingOwnedRoutes = hasMissingOwnedRoutes
+        self.hasMissingDesiredRoutes = hasMissingDesiredRoutes
+    }
 }
 
 /// All callers must serialize operations. SecureJournal additionally holds an
@@ -156,17 +163,30 @@ final class Engine {
         let index = makeIndex(try table.readSnapshot())
         return try journal.records.contains { try matching(index, $0).isEmpty }
     }
-    func inspectHealth() throws -> RouteHealth {
+    func inspectHealth(desiredRoutes: [String] = []) throws -> RouteHealth {
+        try require(desiredRoutes.count <= 20_000, "路由计划条目超限")
+        let desired = try Set(desiredRoutes.map { text in
+            let cidr = try IPv4CIDR(text); try cidr.validateForBypass(); return cidr
+        })
         let journal = try store.load()
         try validateJournal(journal)
         let index = makeIndex(try table.readSnapshot())
         var report = Report()
         summarize(journal, index: index, report: &report)
+        let recorded = Set(journal.records.map(\.cidr))
+        var missingDesired = false
+        for cidr in desired {
+            let exact = index[RouteKey(network: cidr.network, mask: cidrMask(cidr))] ?? []
+            if exact.isEmpty { missingDesired = true }
+            else if !recorded.contains(cidr.description) { report.skipped += 1 }
+        }
         report.message = report.pending == 0 ? "已核验内核路由状态" : "部分恢复记录与内核路由不一致"
         // An existing route with changed ownership is pending, not missing;
         // never use a health check as permission to replace someone else's route.
         let missing = try journal.records.contains { try matching(index, $0).isEmpty }
-        return RouteHealth(report: report, hasMissingOwnedRoutes: missing)
+        // Skipped prefixes never enter the ownership journal. Recheck the full
+        // compiled plan so a vacated foreign prefix can safely be added later.
+        return RouteHealth(report: report, hasMissingOwnedRoutes: missing, hasMissingDesiredRoutes: missingDesired)
     }
     private func validateJournal(_ journal: Journal) throws {
         try require((1...2).contains(journal.version) && journal.records.count <= 20_000, "不支持的恢复日志格式或条目超限")

@@ -4,7 +4,8 @@ import XCTest
 final class ConnectionPresentationTests: XCTestCase {
     private func connected(enabled: Bool = true, phase: String = "active") -> ConnectionState {
         ConnectionState(checked: true, reachable: true, installed: true, networkReady: true,
-                        enabled: enabled, phase: phase, verified: true, active: enabled ? 42 : 0)
+                        enabled: enabled, phase: phase, verified: true, active: enabled ? 42 : 0,
+                        dnsActive: enabled, dnsWithdrawn: !enabled)
     }
     func testInitialStateNeverClaimsOff() {
         let view = ConnectionPresentation.make(ConnectionState())
@@ -36,6 +37,20 @@ final class ConnectionPresentationTests: XCTestCase {
     func testUnverifiedDisabledResponseDoesNotConfirmCleanup() {
         var state = connected(enabled: false, phase: "disabled"); state.verified = false
         XCTAssertNotEqual(ConnectionPresentation.make(state).kind, .off)
+    }
+    func testOffRequiresExplicitDNSWithdrawalEvidence() {
+        let incomplete: [(Bool?, Bool?)] = [
+            (false, false), (false, nil), (nil, nil), (nil, true), (true, false), (true, true)
+        ]
+        for (active, withdrawn) in incomplete {
+            var state = connected(enabled: false, phase: "disabled")
+            state.dnsActive = active
+            state.dnsWithdrawn = withdrawn
+            let view = ConnectionPresentation.make(state)
+            XCTAssertEqual(view.kind, .recovering)
+            XCTAssertEqual(view.primaryAction, .retryStop)
+            XCTAssertEqual(view.secondaryAction, .retryConnection)
+        }
     }
     func testOffWithNetworkUnavailableOffersTailscale() {
         var state = connected(enabled: false, phase: "disabled"); state.networkReady = false

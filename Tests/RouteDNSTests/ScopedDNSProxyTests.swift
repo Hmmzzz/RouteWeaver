@@ -6,16 +6,18 @@ import XCTest
 /// resolver or changing any system network setting.
 final class ScopedDNSProxyTests: XCTestCase {
     func testTCPResetCancelsOutstandingOriginalLookup() throws {
-        let started = expectation(description: "lookup started")
-        let cancelled = expectation(description: "reset cancels upstream")
+        let started = XCTestExpectation(description: "lookup started")
+        let cancelled = XCTestExpectation(description: "reset cancels upstream")
         cancelled.assertForOverFulfill = true
-        let processor = try DNSProcessor(directCIDRs: [], directDomains: [],
-            domesticLookup: { _, _, _ in XCTFail("unexpected domestic lookup"); return DNSCancellation() },
-            originalLookup: { _, _, _, _ in
-                started.fulfill()
-                return DNSCancellation { cancelled.fulfill() }
-            })
-        let proxy = try startProxy(processor); defer { proxy.stop() }
+        let (processor, proxy) = try startDNSProxy {
+            try DNSProcessor(directCIDRs: [], directDomains: [],
+                domesticLookup: { _, _, _ in XCTFail("unexpected domestic lookup"); return DNSCancellation() },
+                originalLookup: { _, _, _, _ in
+                    started.fulfill()
+                    return DNSCancellation { cancelled.fulfill() }
+                })
+        }
+        defer { proxy.stop() }
         let fd = try connectTCP(proxy.port)
         try sendAll(frame(makeQuery("www.example.com")), fd: fd)
         wait(for: [started], timeout: 2)
@@ -27,15 +29,17 @@ final class ScopedDNSProxyTests: XCTestCase {
     }
 
     func testTCPHalfClosePreservesDelayedPipelinedResponses() throws {
-        let processor = try DNSProcessor(directCIDRs: [], directDomains: [],
-            domesticLookup: { _, _, _ in XCTFail("unexpected domestic lookup"); return DNSCancellation() },
-            originalLookup: { data, transport, _, completion in
-                XCTAssertEqual(transport, .tcp)
-                let response = DNSWire.response(to: DNSWire.question(data)!, addresses: [0xc0000201], ttl: 30)
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { completion(response) }
-                return DNSCancellation()
-            })
-        let proxy = try startProxy(processor); defer { proxy.stop() }
+        let (_, proxy) = try startDNSProxy {
+            try DNSProcessor(directCIDRs: [], directDomains: [],
+                domesticLookup: { _, _, _ in XCTFail("unexpected domestic lookup"); return DNSCancellation() },
+                originalLookup: { data, transport, _, completion in
+                    XCTAssertEqual(transport, .tcp)
+                    let response = DNSWire.response(to: DNSWire.question(data)!, addresses: [0xc0000201], ttl: 30)
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) { completion(response) }
+                    return DNSCancellation()
+                })
+        }
+        defer { proxy.stop() }
         let fd = try connectTCP(proxy.port); defer { Darwin.close(fd) }
         let first = makeQuery("first.example.com")
         var second = makeQuery("second.example.com"); second[1] ^= 1
@@ -59,46 +63,22 @@ final class ScopedDNSProxyTests: XCTestCase {
     }
 
     func testProxyStopCancelsOutstandingDomesticWork() throws {
-        let started = expectation(description: "domestic lookup started")
-        let cancelled = expectation(description: "stop cancels upstream")
+        let started = XCTestExpectation(description: "domestic lookup started")
+        let cancelled = XCTestExpectation(description: "stop cancels upstream")
         cancelled.assertForOverFulfill = true
-        let processor = try DNSProcessor(directCIDRs: ["223.5.5.0/24"], directDomains: ["example.com"],
-            domesticLookup: { _, _, _ in
-                started.fulfill(); return DNSCancellation { cancelled.fulfill() }
-            }, originalLookup: { _, _, _, _ in XCTFail("unexpected fallback"); return DNSCancellation() })
-        let proxy = try startProxy(processor)
-        let fd = try connectTCP(proxy.port); defer { Darwin.close(fd); proxy.stop() }
+        let (processor, proxy) = try startDNSProxy {
+            try DNSProcessor(directCIDRs: ["223.5.5.0/24"], directDomains: ["example.com"],
+                domesticLookup: { _, _, _ in
+                    started.fulfill(); return DNSCancellation { cancelled.fulfill() }
+                }, originalLookup: { _, _, _, _ in XCTFail("unexpected fallback"); return DNSCancellation() })
+        }
+        defer { proxy.stop() }
+        let fd = try connectTCP(proxy.port); defer { Darwin.close(fd) }
         try sendAll(frame(makeQuery("www.example.com")), fd: fd)
         wait(for: [started], timeout: 2)
         proxy.stop(); proxy.stop()
         wait(for: [cancelled], timeout: 2)
         XCTAssertEqual(processor.activitySnapshot.active, 0)
-    }
-
-    private func startProxy(_ processor: DNSProcessor) throws -> ScopedDNSProxy {
-        // Ask the kernel for a free TCP port, then let the proxy bind TCP + UDP.
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw SocketError.operation(errno) }
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET); address.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let result = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-        }
-        guard result == 0 else { Darwin.close(fd); throw SocketError.operation(errno) }
-        var size = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let nameResult = withUnsafeMutablePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &size) }
-        }
-        Darwin.close(fd)
-        guard nameResult == 0 else { throw SocketError.operation(errno) }
-        let proxy = try ScopedDNSProxy(port: UInt16(bigEndian: address.sin_port), processor: processor)
-        let ready = expectation(description: "proxy ready")
-        var failure: Error?
-        proxy.start { result in if case .failure(let error) = result { failure = error }; ready.fulfill() }
-        wait(for: [ready], timeout: 4)
-        if let failure { proxy.stop(); throw failure }
-        return proxy
     }
 
     private func connectTCP(_ port: UInt16) throws -> Int32 {

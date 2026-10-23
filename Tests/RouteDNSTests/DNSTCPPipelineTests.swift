@@ -6,10 +6,10 @@ import XCTest
 /// so response ordering, capacity and cancellation do not depend on the network.
 final class DNSTCPPipelineTests: XCTestCase {
     func testSlowQueryDoesNotBlockLaterResponsesAfterHalfClose() throws {
-        let started = expectation(description: "three queries admitted"); started.expectedFulfillmentCount = 3
+        let started = XCTestExpectation(description: "three queries admitted"); started.expectedFulfillmentCount = 3
         let gate = TCPOriginalGate(onStart: { _ in started.fulfill() })
-        let processor = try makeProcessor(gate)
-        let proxy = try startProxy(processor); defer { proxy.stop() }
+        let (processor, proxy) = try startDNSProxy { try makeProcessor(gate) }
+        defer { proxy.stop() }
         let client = try TCPTestClient(port: proxy.port)
         let queries = (1...3).map { query(UInt16($0)) }
         try client.send(queries)
@@ -29,20 +29,22 @@ final class DNSTCPPipelineTests: XCTestCase {
     }
 
     func testCachedDomesticAnswerOvertakesSlowOriginalQuery() throws {
-        let domestic = expectation(description: "one cache fill"); domestic.assertForOverFulfill = true
-        let slow = expectation(description: "original query remains outstanding")
+        let domestic = XCTestExpectation(description: "one cache fill"); domestic.assertForOverFulfill = true
+        let slow = XCTestExpectation(description: "original query remains outstanding")
         let gate = TCPOriginalGate(onStart: { _ in slow.fulfill() })
-        let processor = try DNSProcessor(directCIDRs: ["101.4.0.0/14", "223.5.5.0/24"], directDomains: ["qq.com"],
-            domesticLookup: { _, _, completion in
-                domestic.fulfill(); completion(.response(DNSAAnswer(addresses: [0x65060f82], ttl: 30)))
-                return DNSCancellation()
-            }, originalLookup: gate.lookup)
-        let seeded = expectation(description: "cache filled")
+        let (processor, proxy) = try startDNSProxy {
+            try DNSProcessor(directCIDRs: ["101.4.0.0/14", "223.5.5.0/24"], directDomains: ["qq.com"],
+                domesticLookup: { _, _, completion in
+                    domestic.fulfill(); completion(.response(DNSAAnswer(addresses: [0x65060f82], ttl: 30)))
+                    return DNSCancellation()
+                }, originalLookup: gate.lookup)
+        }
+        defer { proxy.stop() }
+        let seeded = XCTestExpectation(description: "cache filled")
         processor.process(query(10, name: "cached.qq.com")) { response in
             XCTAssertNotNil(response); seeded.fulfill()
         }
         wait(for: [domestic, seeded], timeout: 2)
-        let proxy = try startProxy(processor); defer { proxy.stop() }
         let client = try TCPTestClient(port: proxy.port)
         let first = query(11), cached = query(12, name: "cached.qq.com")
         try client.send([first, cached])
@@ -58,13 +60,13 @@ final class DNSTCPPipelineTests: XCTestCase {
     }
 
     func testFullConnectionWindowBackpressuresBufferedQueriesUntilRepliesAreSent() throws {
-        let firstWindow = expectation(description: "first eight admitted"); firstWindow.expectedFulfillmentCount = 8
-        let nextWindow = expectation(description: "buffered queries later admitted"); nextWindow.expectedFulfillmentCount = 4
+        let firstWindow = XCTestExpectation(description: "first eight admitted"); firstWindow.expectedFulfillmentCount = 8
+        let nextWindow = XCTestExpectation(description: "buffered queries later admitted"); nextWindow.expectedFulfillmentCount = 4
         let gate = TCPOriginalGate(onStart: { id in
             if id < 8 { firstWindow.fulfill() } else { nextWindow.fulfill() }
         })
-        let processor = try makeProcessor(gate)
-        let proxy = try startProxy(processor); defer { proxy.stop() }
+        let (processor, proxy) = try startDNSProxy { try makeProcessor(gate) }
+        defer { proxy.stop() }
         let client = try TCPTestClient(port: proxy.port)
         let queries = (0..<12).map { query(UInt16($0)) }
         try client.send(queries)
@@ -89,18 +91,20 @@ final class DNSTCPPipelineTests: XCTestCase {
     }
 
     func testOptimizationLimitKeepsOriginalSlotsAndStopCancelsAllOutstandingWork() throws {
-        let domesticStarted = expectation(description: "six domestic requests"); domesticStarted.expectedFulfillmentCount = 6
-        let domesticCancelled = expectation(description: "six domestic cancellations"); domesticCancelled.expectedFulfillmentCount = 6
-        let originalStarted = expectation(description: "two reserved original requests"); originalStarted.expectedFulfillmentCount = 2
-        let originalCancelled = expectation(description: "two original cancellations"); originalCancelled.expectedFulfillmentCount = 2
+        let domesticStarted = XCTestExpectation(description: "six domestic requests"); domesticStarted.expectedFulfillmentCount = 6
+        let domesticCancelled = XCTestExpectation(description: "six domestic cancellations"); domesticCancelled.expectedFulfillmentCount = 6
+        let originalStarted = XCTestExpectation(description: "two reserved original requests"); originalStarted.expectedFulfillmentCount = 2
+        let originalCancelled = XCTestExpectation(description: "two original cancellations"); originalCancelled.expectedFulfillmentCount = 2
         domesticCancelled.assertForOverFulfill = true; originalCancelled.assertForOverFulfill = true
         let gate = TCPOriginalGate(onStart: { _ in originalStarted.fulfill() }, onCancel: { _ in originalCancelled.fulfill() })
-        let processor = try DNSProcessor(directCIDRs: ["223.5.5.0/24"], directDomains: ["qq.com"],
-            domesticLookup: { _, _, _ in
-                domesticStarted.fulfill()
-                return DNSCancellation { domesticCancelled.fulfill() }
-            }, originalLookup: gate.lookup)
-        let proxy = try startProxy(processor); defer { proxy.stop() }
+        let (processor, proxy) = try startDNSProxy {
+            try DNSProcessor(directCIDRs: ["223.5.5.0/24"], directDomains: ["qq.com"],
+                domesticLookup: { _, _, _ in
+                    domesticStarted.fulfill()
+                    return DNSCancellation { domesticCancelled.fulfill() }
+                }, originalLookup: gate.lookup)
+        }
+        defer { proxy.stop() }
         let client = try TCPTestClient(port: proxy.port)
         let optimization = (0..<8).map { query(UInt16($0), name: "n\($0).qq.com") }
         try client.send(optimization + [query(8), query(9)])
@@ -120,12 +124,12 @@ final class DNSTCPPipelineTests: XCTestCase {
     }
 
     func testResetCancelsEveryOutstandingQuery() throws {
-        let started = expectation(description: "eight original queries"); started.expectedFulfillmentCount = 8
-        let cancelled = expectation(description: "eight cancellations"); cancelled.expectedFulfillmentCount = 8
+        let started = XCTestExpectation(description: "eight original queries"); started.expectedFulfillmentCount = 8
+        let cancelled = XCTestExpectation(description: "eight cancellations"); cancelled.expectedFulfillmentCount = 8
         cancelled.assertForOverFulfill = true
         let gate = TCPOriginalGate(onStart: { _ in started.fulfill() }, onCancel: { _ in cancelled.fulfill() })
-        let processor = try makeProcessor(gate)
-        let proxy = try startProxy(processor); defer { proxy.stop() }
+        let (processor, proxy) = try startDNSProxy { try makeProcessor(gate) }
+        defer { proxy.stop() }
         let client = try TCPTestClient(port: proxy.port)
         // Include an extra complete frame waiting behind the full window.
         try client.send((0..<9).map { query(UInt16($0)) })
@@ -137,10 +141,10 @@ final class DNSTCPPipelineTests: XCTestCase {
     }
 
     func testConcurrentLargeResponsesKeepCompleteFramesAndTransactionIDs() throws {
-        let started = expectation(description: "eight large responses pending"); started.expectedFulfillmentCount = 8
+        let started = XCTestExpectation(description: "eight large responses pending"); started.expectedFulfillmentCount = 8
         let gate = TCPOriginalGate(onStart: { _ in started.fulfill() })
-        let processor = try makeProcessor(gate)
-        let proxy = try startProxy(processor); defer { proxy.stop() }
+        let (_, proxy) = try startDNSProxy { try makeProcessor(gate) }
+        defer { proxy.stop() }
         let client = try TCPTestClient(port: proxy.port)
         let queries = (100..<108).map { query(UInt16($0)) }
         try client.send(queries)
@@ -177,31 +181,6 @@ final class DNSTCPPipelineTests: XCTestCase {
     }
     private func expectedResponses(_ queries: [Data]) -> [UInt16: Data] {
         Dictionary(uniqueKeysWithValues: queries.map { (DNSWire.question($0)!.id, tcpResponse(for: $0)) })
-    }
-    private func startProxy(_ processor: DNSProcessor) throws -> ScopedDNSProxy {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw TCPPipelineError.operation("socket", errno) }
-        var address = tcpLoopbackAddress(port: 0)
-        let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-        }
-        guard bound == 0 else { let code = errno; Darwin.close(fd); throw TCPPipelineError.operation("bind", code) }
-        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let named = withUnsafeMutablePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
-        }
-        let code = errno; Darwin.close(fd)
-        guard named == 0 else { throw TCPPipelineError.operation("getsockname", code) }
-        let proxy = try ScopedDNSProxy(port: UInt16(bigEndian: address.sin_port), processor: processor)
-        let ready = expectation(description: "listeners ready")
-        var failure: Error?
-        proxy.start { result in
-            if case .failure(let error) = result { failure = error }
-            ready.fulfill()
-        }
-        wait(for: [ready], timeout: 4)
-        if let failure { proxy.stop(); throw failure }
-        return proxy
     }
 }
 

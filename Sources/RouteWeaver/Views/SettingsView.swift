@@ -25,7 +25,7 @@ struct SettingsView: View {
                 AboutSection(version: version, author: "Hmmzzz", authorURL: URL(string: "https://github.com/Hmmzzz"))
                 HStack {
                     Spacer()
-                    Button("打开配置文件夹", systemImage: "folder") { NSWorkspace.shared.open(ProfileStorage.directory) }
+                    Button("打开配置文件夹", systemImage: "folder") { NSWorkspace.shared.open(store.configurationDirectory) }
                         .buttonStyle(WeaveActionStyle())
                 }.padding(.top, 2)
             }
@@ -117,7 +117,7 @@ struct SettingsView: View {
                 settingRow("关闭分流", value: "恢复原解析，并撤销本应用路由")
                 settingRow("关闭窗口", value: "隐藏 Dock 图标，保留状态栏与分流")
                 settingRow("退出应用", value: "先撤回 DNS 和路由，确认恢复后退出")
-                settingRow("国内域名解析", value: store.serviceDNSActive ? "已开启 · \(store.serviceDNSDomainCount.formatted()) 个域名范围" : store.serviceDNSMessage)
+                settingRow("国内域名解析", value: store.serviceDNSActive == true ? "已开启 · \(store.serviceDNSDomainCount.formatted()) 个域名范围" : store.serviceDNSMessage)
                 settingRow("IPv6", value: "已确认直连的域名使用 IPv4，其余沿用原设置")
             }.font(.system(size: 13))
             Label("国内白名单使用阿里公共 DNS 加密解析，其余查询交回 Tailscale。查询仅短暂缓存在内存，不保存访问历史。规则和活动记录保存在本机。", systemImage: "internaldrive")

@@ -87,6 +87,72 @@ final class DNSOriginalUpstreamTests: XCTestCase {
         XCTAssertEqual(udp.cancelCount, 1)
     }
 
+    func testCancellationCancelsConnectionAndCompletesOnce() throws {
+        let started = expectation(description: "original connection started")
+        let done = expectation(description: "original cancelled"); done.assertForOverFulfill = true
+        let tcp = FakeDNSConnection(); tcp.onStart = { started.fulfill() }
+        let upstream = DNSOriginalUpstream(makeConnection: { _ in tcp })
+        let cancellation = upstream.lookup(makeQuery("www.google.com"), transport: .tcp) { response in
+            XCTAssertNil(response); done.fulfill()
+        }
+        wait(for: [started], timeout: 1)
+        cancellation.cancel(); cancellation.cancel()
+        wait(for: [done], timeout: 1)
+        upstream.stop()
+        XCTAssertEqual(tcp.cancelCount, 1)
+    }
+
+    func testPerRequestBudgetIsShorterThanInstanceTimeout() {
+        let done = expectation(description: "short request deadline")
+        let udp = FakeDNSConnection()
+        let upstream = DNSOriginalUpstream(timeout: 3, makeConnection: { _ in udp })
+        let start = ProcessInfo.processInfo.systemUptime
+        upstream.lookup(makeQuery("www.google.com"), timeout: 0.03) { response in
+            XCTAssertNil(response); done.fulfill()
+        }
+        wait(for: [done], timeout: 0.8)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.8)
+        upstream.stop(); XCTAssertEqual(udp.cancelCount, 1)
+    }
+
+    func testExhaustedBudgetDoesNotCreateConnection() {
+        let upstream = DNSOriginalUpstream(makeConnection: { _ in XCTFail("No budget must not open a socket"); return FakeDNSConnection() })
+        for budget in [0, -1, Double.infinity, Double.nan] {
+            let done = expectation(description: "invalid budget")
+            upstream.lookup(makeQuery("www.google.com"), timeout: budget) { response in
+                XCTAssertNil(response); done.fulfill()
+            }
+            wait(for: [done], timeout: 1)
+        }
+        upstream.stop()
+    }
+
+    func testCancellationReleasesAllUpstreamSlotsForNewWork() {
+        let started = expectation(description: "all upstream slots occupied"); started.expectedFulfillmentCount = 64
+        let nextStarted = expectation(description: "new work admitted after cancellation")
+        var creations = 0
+        let upstream = DNSOriginalUpstream(makeConnection: { _ in
+            creations += 1
+            let connection = FakeDNSConnection()
+            connection.onStart = creations <= 64 ? { started.fulfill() } : { nextStarted.fulfill() }
+            return connection
+        })
+        let done = expectation(description: "cancelled work")
+        done.expectedFulfillmentCount = 64; done.assertForOverFulfill = true
+        let handles = (0..<64).map { _ in upstream.lookup(makeQuery("www.google.com")) { response in
+            XCTAssertNil(response); done.fulfill()
+        } }
+        wait(for: [started], timeout: 1)
+        handles.forEach { $0.cancel() }
+        wait(for: [done], timeout: 1)
+        let next = expectation(description: "next request gets its short deadline")
+        upstream.lookup(makeQuery("www.google.com"), timeout: 0.02) { response in
+            XCTAssertNil(response); next.fulfill()
+        }
+        wait(for: [nextStarted, next], timeout: 1)
+        upstream.stop()
+    }
+
     func testOpaqueQueryAndHeaderOnlyFORMERRAreRelayedUnchanged() {
         var query = makeQuery("qq.com"); query[5] = 2; query.append(makeQuery("other.qq.com").dropFirst(12))
         var response = Data(); response.appendUInt16(0xabcd); response.appendUInt16(0x8181)

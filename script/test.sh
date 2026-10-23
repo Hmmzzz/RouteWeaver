@@ -8,4 +8,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 export CLANG_MODULE_CACHE_PATH="$TEST_DIR/modules"
 export SWIFTPM_MODULECACHE_OVERRIDE="$TEST_DIR/modules"
 swift test --disable-sandbox --scratch-path "$TEST_DIR/build" --cache-path "$TEST_DIR/cache"
+BIN_DIR="$(swift build --show-bin-path --disable-sandbox --scratch-path "$TEST_DIR/build" --cache-path "$TEST_DIR/cache")"
 "$ROOT_DIR/script/test_route_snapshot.sh"
+"$ROOT_DIR/script/check_route_statistics.sh"
+"$ROOT_DIR/script/check_helper_inputs.sh" "$BIN_DIR/RouteWeaverHelper"
+python3 "$ROOT_DIR/script/test_live_service_session.py"

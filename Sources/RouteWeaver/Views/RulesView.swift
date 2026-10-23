@@ -411,7 +411,7 @@ private enum RuleFilter: String, CaseIterable, Identifiable {
     }
 }
 
-private struct RulesDocument: FileDocument {
+struct RulesDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.json, .plainText] }
     var text: String
     init(text: String) { self.text = text }

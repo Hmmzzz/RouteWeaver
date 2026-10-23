@@ -38,7 +38,7 @@ struct RouteFlowView: View {
                 Image(systemName: "line.3.horizontal.decrease").foregroundStyle(WeaveStyle.accent.opacity(0.65))
                 Text("出口例外优先").foregroundStyle(.white.opacity(0.47))
                 Spacer()
-                Text(store.serviceDNSActive ? "国内域名解析已分流" : "域名解析沿用原设置").foregroundStyle(.white.opacity(0.45))
+                Text(store.serviceDNSActive == true ? "国内域名解析已分流" : (store.dnsRestorationConfirmed ? "域名解析沿用原设置" : "域名解析状态待确认")).foregroundStyle(.white.opacity(0.45))
             }.font(.system(size: 11)).padding(.horizontal, 22).padding(.bottom, 16)
         }
         .background {

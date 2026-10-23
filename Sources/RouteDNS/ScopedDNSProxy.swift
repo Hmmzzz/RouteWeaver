@@ -182,36 +182,51 @@ public final class ScopedDNSProxy {
     }
     private func advanceTCP(_ peer: DNSPeer) {
         guard peers[peer.id] != nil, !stopped else { return }
-        if peer.processing { receiveTCP(peer); return }
-        if peer.buffer.count >= 2, let size = DNSWire.read16([UInt8](peer.buffer), 0) {
+        // Include queued and currently sending responses in this bound, so a
+        // client that stops reading cannot accumulate unbounded reply data.
+        // The processor still owns admission and its reserved original slots.
+        while peer.tcpOutstanding < DNSProcessor.maximumRequestsPerPeer,
+              peer.buffer.count >= 2, let size = DNSWire.read16([UInt8](peer.buffer), 0) {
             guard size >= 12, size <= DNSWire.maximumQuerySize else { close(peer); return }
-            if peer.buffer.count >= Int(size) + 2 {
-                let data = Data(peer.buffer.dropFirst(2).prefix(Int(size)))
-                // Data.removeFirst preserves a nonzero startIndex. Rebase the
-                // remainder before parsing another frame on this connection.
-                peer.buffer = Data(peer.buffer.dropFirst(Int(size) + 2))
-                guard DNSWire.isQueryMessage(data) else { close(peer); return }
-                peer.processing = true; touch(peer)
-                process(data, peer: peer) { [weak self, weak peer] response in
-                    guard let self, let peer, self.peers[peer.id] != nil else { return }
-                    var framed = Data(); framed.appendUInt16(UInt16(response.count)); framed.append(response)
-                    peer.connection.send(content: framed, completion: .contentProcessed { [weak self, weak peer] error in
-                        guard let self, let peer, self.peers[peer.id] != nil else { return }
-                        if error != nil { self.close(peer); return }
-                        peer.processing = false
-                        if peer.receivedEOF && peer.buffer.isEmpty { self.close(peer) }
-                        else { self.advanceTCP(peer) }
-                    })
-                }
-                // Keep a bounded read pending so a reset can cancel upstream
-                // work even while its DNS response is outstanding. A clean
-                // write half-close still permits the pending response.
-                receiveTCP(peer)
-                return
+            guard peer.buffer.count >= Int(size) + 2 else { break }
+            let data = Data(peer.buffer.dropFirst(2).prefix(Int(size)))
+            // Data.removeFirst preserves a nonzero startIndex. Rebase the
+            // remainder before parsing another frame on this connection.
+            peer.buffer = Data(peer.buffer.dropFirst(Int(size) + 2))
+            guard DNSWire.isQueryMessage(data) else { close(peer); return }
+            peer.tcpOutstanding += 1; touch(peer)
+            process(data, peer: peer) { [weak self, weak peer] response in
+                guard let self, let peer, self.peers[peer.id] != nil else { return }
+                var framed = Data(); framed.appendUInt16(UInt16(response.count)); framed.append(response)
+                peer.tcpResponses.append(framed)
+                self.sendTCP(peer)
             }
         }
-        guard !peer.receivedEOF else { close(peer); return }
+        if peer.receivedEOF {
+            // A write half-close leaves every complete buffered query and all
+            // outstanding responses alive. Any incomplete tail is discarded
+            // only after those responses have been sent.
+            if peer.tcpOutstanding == 0 { close(peer) }
+            return
+        }
+        // Keep a bounded read pending to observe resets while queries run.
+        // Buffer at most one maximum-size frame's worth of additional bytes.
         receiveTCP(peer)
+    }
+    private func sendTCP(_ peer: DNSPeer) {
+        guard peers[peer.id] != nil, !stopped, !peer.sendingTCP, !peer.tcpResponses.isEmpty else { return }
+        peer.sendingTCP = true
+        let framed = peer.tcpResponses.removeFirst()
+        // Each send contains one complete length-prefixed response. Responses
+        // may finish out of order, but their bytes must never interleave.
+        peer.connection.send(content: framed, completion: .contentProcessed { [weak self, weak peer] error in
+            guard let self, let peer, self.peers[peer.id] != nil else { return }
+            if error != nil { self.close(peer); return }
+            peer.sendingTCP = false; peer.tcpOutstanding -= 1
+            self.touch(peer)
+            self.sendTCP(peer)
+            self.advanceTCP(peer)
+        })
     }
     private func receiveTCP(_ peer: DNSPeer) {
         let room = DNSWire.maximumQuerySize + 2 - peer.buffer.count
@@ -226,9 +241,9 @@ public final class ScopedDNSProxy {
         }
     }
     private func process(_ data: Data, peer: DNSPeer, completion: @escaping (Data) -> Void) {
-        // The processor owns both global and per-peer admission. A separate
-        // listener gate would let slow optimization requests consume the slots
-        // reserved for original-only queries before that policy can run.
+        // The processor owns global/per-peer admission and reserves capacity
+        // for original-only queries. TCP's separate transport window includes
+        // completed replies only to bound buffering for clients that read slowly.
         let requestID = UUID()
         peer.activity.requests += 1
         let cancellation = processor.process(data, transport: peer.isTCP ? .tcp : .udp, peerID: peer.id) { [weak self, weak peer] response in
@@ -251,7 +266,9 @@ private final class DNSPeer {
     let isTCP: Bool
     var idle: DispatchWorkItem?
     var buffer = Data()
-    var processing = false
+    var tcpOutstanding = 0
+    var tcpResponses: [Data] = []
+    var sendingTCP = false
     var receiving = false
     var receivedEOF = false
     var requests: [UUID: DNSCancellation] = [:]

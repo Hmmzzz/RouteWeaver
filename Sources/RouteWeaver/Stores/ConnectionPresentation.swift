@@ -56,6 +56,13 @@ struct ConnectionPresentation: Equatable, Sendable {
             return .init(kind: .recovering, title: state.enabled ? "分流正在恢复" : "仍有路由需要清理", detail: state.enabled ? "后台会自动重试。你也可以关闭分流，停止恢复并清理路由。" : "自动恢复已关闭，但清理尚未完成。重试关闭分流不会添加新路由。", symbol: "exclamationmark.arrow.triangle.2.circlepath", tone: .warning, primaryAction: state.enabled ? .retryConnection : .retryStop, secondaryAction: state.enabled ? .retryStop : nil)
         }
         if !state.enabled && state.phase == "disabled" && state.active == 0 && state.pending == 0 && state.verified {
+            guard state.dnsActive == false && state.dnsWithdrawn == true else {
+                let pending = state.dnsWithdrawn == false
+                return .init(kind: .recovering, title: pending ? "正在恢复原 DNS" : "DNS 恢复状态待确认",
+                    detail: pending ? "路由已清理，系统仍在撤回本应用的 DNS 配置。确认撤回后才会显示分流已关闭。" : "路由已清理，但后台尚未确认 DNS 已恢复。请重新检查或重试关闭分流。",
+                    symbol: "exclamationmark.arrow.triangle.2.circlepath", tone: .warning,
+                    primaryAction: .retryStop, secondaryAction: .retryConnection)
+            }
             return .init(kind: .off, title: "分流已关闭", detail: state.networkReady ? "连接已就绪。开启后，中国大陆 IPv4 直连，其他流量沿用出口节点。" : "当前沿用系统与 Tailscale 原有路由。连接出口节点后即可开启分流。", symbol: "power", tone: .neutral, primaryAction: state.networkReady ? nil : .openTailscale)
         }
         if state.enabled {
@@ -98,5 +105,7 @@ struct ConnectionState: Equatable, Sendable {
     var failed = 0
     var skipped = 0
     var hasUnappliedChanges = false
+    var dnsActive: Bool?
+    var dnsWithdrawn: Bool?
     var operation: AppOperation?
 }

@@ -48,12 +48,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct RouteWeaverApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var store = AppStore()
-    @State private var traffic = TrafficMonitor()
+    @State private var store: AppStore
+    @State private var traffic: TrafficMonitor
 
     init() {
         // Diagnostic client uses the same signed executable and authorization as the UI.
         let args = CommandLine.arguments
+        if args.count >= 2 && args[1] == "--service-session" {
+            do {
+                guard args.count == 2 else { throw IPCError("会话模式不接受额外参数") }
+                try ServiceDiagnosticSession.runStandardIO()
+                exit(0)
+            } catch { fputs("\(error)\n", stderr); exit(2) }
+        }
         if args.count >= 2 && args[1] == "--service-command" {
             do {
                 guard args.count == 3, let data = Data(base64Encoded: args[2]) else { throw IPCError("无效的服务请求") }
@@ -63,6 +70,9 @@ struct RouteWeaverApp: App {
                 exit(response.failed == 0 ? 0 : 1)
             } catch { fputs("\(error)\n", stderr); exit(2) }
         }
+        // Diagnostics must not load or write the interactive user's profile.
+        _store = State(initialValue: AppStore())
+        _traffic = State(initialValue: TrafficMonitor())
     }
 
     var body: some Scene {

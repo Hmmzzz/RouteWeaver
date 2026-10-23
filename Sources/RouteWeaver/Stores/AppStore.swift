@@ -19,6 +19,7 @@ final class AppStore {
     var plannedRoutes: [String] = []
     var events: [ActivityEvent] = []
     var lastError: String?
+    private(set) var profileRecoveryMessage: String?
     var notice: String?
     var searchText = ""
     var datasetDate = "读取中"
@@ -27,9 +28,10 @@ final class AppStore {
     var serviceEnabled = false
     var servicePhase = ""
     var serviceMessage = "尚未读取后台服务状态"
-    var serviceDNSActive = false
+    var serviceDNSActive: Bool?
+    var serviceDNSWithdrawn: Bool?
     var serviceDNSDomainCount = 0
-    var serviceDNSMessage = "国内域名解析尚未启用"
+    var serviceDNSMessage = "国内域名解析状态尚未确认"
     var serviceReachable = false
     var serviceChecked = false
     var serviceInstalled = false
@@ -50,11 +52,21 @@ final class AppStore {
     }
     var displayedGateway: String? { usesConfirmedServiceNetwork ? serviceGateway : network.gateway }
     var displayedInterface: String? { usesConfirmedServiceNetwork ? serviceInterface : network.interface }
+    var dnsRestorationConfirmed: Bool { serviceReachable && serviceDNSActive == false && serviceDNSWithdrawn == true }
+    var dnsStatusText: String {
+        guard serviceReachable else { return "待确认" }
+        if serviceDNSActive == true { return "已启用" }
+        if dnsRestorationConfirmed { return "未启用" }
+        if !serviceEnabled && serviceDNSWithdrawn == false { return "撤回中" }
+        return "待确认"
+    }
+    var configurationDirectory: URL { profileStorage.location }
     var hasUnappliedChanges: Bool { serviceEnabled && appliedDigest.map { $0 != planDigest } == true }
     var requiresReapply: Bool { hasUnappliedChanges }
     var canApply: Bool {
         guard !isBusy, !isQuitting, planValid else { return false }
         if plannedRoutes.isEmpty { return canStop }
+        guard profileRecoveryMessage == nil else { return false }
         return network.ready && serviceChecked && (serviceReachable || !serviceInstalled)
     }
     var canStop: Bool {
@@ -70,7 +82,8 @@ final class AppStore {
             installed: serviceInstalled, networkReady: network.ready, enabled: serviceEnabled,
             phase: servicePhase, verified: serviceVerified, active: lastAppliedCount,
             pending: pendingRouteCount, failed: serviceFailed, skipped: serviceSkipped,
-            hasUnappliedChanges: hasUnappliedChanges, operation: operation))
+            hasUnappliedChanges: hasUnappliedChanges, dnsActive: serviceDNSActive,
+            dnsWithdrawn: serviceDNSWithdrawn, operation: operation))
     }
     private var planValid = false
     @ObservationIgnored private var started = false
@@ -80,6 +93,8 @@ final class AppStore {
     @ObservationIgnored private var monitorTask: Task<Void, Never>?
     @ObservationIgnored private var compiled: [IPv4CIDR] = []
     @ObservationIgnored private var persistenceBlocked = false
+    @ObservationIgnored private let profileStorage: ProfileStorage
+    @ObservationIgnored private var profileRevision = ProfileStorage.Revision.missing
     private var appliedDigest: String?
     private var planDigest = ""
     private var serviceFailed = 0
@@ -90,15 +105,18 @@ final class AppStore {
 
     /// Tests can opt out of all user files and background work.
     init(loadPersistedState: Bool = true,
+         profileStorage: ProfileStorage = ProfileStorage(),
          stopService: @escaping () async throws -> ServiceResponse = { try await PrivilegedClient.stop() },
          stopForExit: (() async throws -> ServiceResponse)? = nil) {
+        self.profileStorage = profileStorage
         self.stopService = stopService
         self.stopForExit = stopForExit ?? { try await PrivilegedClient.stopForExit() }
         serviceInstalled = FileManager.default.fileExists(atPath: ServicePaths.executable)
         guard loadPersistedState else { persistenceBlocked = true; return }
         do {
-            try ProfileStorage.prepareDirectory()
-            if let saved = try ProfileStorage.read() {
+            let snapshot = try profileStorage.load()
+            profileRevision = snapshot.revision
+            if let saved = snapshot.profile {
                 rules = saved.rules
                 countryEnabled = saved.countryEnabled
                 // Saved counts are history, never evidence of current routes.
@@ -106,7 +124,7 @@ final class AppStore {
             }
         } catch {
             persistenceBlocked = true
-            setError("读取配置失败，原文件未覆盖：\(error.localizedDescription)", source: .profile)
+            reportProfileFailure("读取配置失败，原文件未覆盖：\(error.localizedDescription)")
         }
         loadDataset()
         compilePlan()
@@ -261,6 +279,10 @@ final class AppStore {
     func apply() async {
         guard !isBusy, !isQuitting else { return }
         if planValid && plannedRoutes.isEmpty { await rollback(); return }
+        if let profileRecoveryMessage {
+            setError(profileRecoveryMessage, source: .profile)
+            return
+        }
         begin(.applying)
         defer { endOperation() }
         guard planValid else {
@@ -393,7 +415,8 @@ final class AppStore {
         serviceEnabled = result.enabled
         servicePhase = result.phase
         serviceMessage = result.message
-        serviceDNSActive = result.dnsActive ?? false
+        serviceDNSActive = result.dnsActive
+        serviceDNSWithdrawn = result.dnsWithdrawn
         serviceDNSDomainCount = result.dnsDomainCount ?? 0
         serviceDNSMessage = result.dnsMessage ?? "后台尚不支持国内域名解析，请更新后台服务"
         serviceVerified = result.verified
@@ -403,7 +426,7 @@ final class AppStore {
         serviceSkipped = result.skipped
         pendingRouteCount = result.pending
         lastAppliedCount = result.active
-        hasApplied = result.enabled || result.active > 0 || result.pending > 0
+        hasApplied = result.enabled || result.active > 0 || result.pending > 0 || result.dnsActive == true || result.dnsWithdrawn == false
         appliedDigest = result.desiredRoutesDigest
         if previouslyReachable && previousPhase != result.phase && result.phase == "active" && result.verified && result.failed == 0 {
             record("分流已就绪", "已核验 \(result.active.formatted()) 条直连路由。\(result.skipped > 0 ? "保留 \(result.skipped) 条系统已有路由。" : "")", result.skipped > 0 ? .warning : .success)
@@ -413,7 +436,8 @@ final class AppStore {
     private func serviceUnavailable(_ error: Error) {
         serviceChecked = true
         serviceReachable = false
-        serviceDNSActive = false
+        serviceDNSActive = nil
+        serviceDNSWithdrawn = nil
         serviceDNSMessage = "无法读取国内域名解析状态"
         serviceInstalled = FileManager.default.fileExists(atPath: ServicePaths.executable)
         serviceVerified = false
@@ -486,8 +510,8 @@ final class AppStore {
             _ = try PolicyCompiler.compile(countryCIDRs: strings, rules: rules, excludedAddresses: [])
             let date = Date.now.formatted(.iso8601.year().month().day().dateSeparator(.dash))
             let output = "# APNIC CN IPv4\n# Source: https://ftp.apnic.net/stats/apnic/delegated-apnic-latest\n# Retrieved: \(date)\n" + strings.joined(separator: "\n") + "\n"
-            try ProfileStorage.prepareDirectory()
-            try Data(output.utf8).write(to: ProfileStorage.directory.appendingPathComponent("cn-ipv4.txt"), options: .atomic)
+            try ProfileStorage.prepareDirectory(at: configurationDirectory)
+            try Data(output.utf8).write(to: configurationDirectory.appendingPathComponent("cn-ipv4.txt"), options: .atomic)
             countryRoutes = strings
             datasetDate = date
             clearError(from: .dataset)
@@ -497,7 +521,7 @@ final class AppStore {
     }
 
     private func loadDataset() {
-        let cached = ProfileStorage.directory.appendingPathComponent("cn-ipv4.txt")
+        let cached = configurationDirectory.appendingPathComponent("cn-ipv4.txt")
         let packaged = Bundle.main.resourceURL?.appendingPathComponent("RouteWeaver_RouteWeaver.bundle")
         let resourceBundle = packaged.flatMap { Bundle(url: $0) }
         let bundled = resourceBundle?.url(forResource: "cn-ipv4", withExtension: "txt") ?? Bundle.module.url(forResource: "cn-ipv4", withExtension: "txt")
@@ -526,7 +550,39 @@ final class AppStore {
     private func persist() {
         guard !persistenceBlocked else { return }
         do {
-            try ProfileStorage.save(SavedProfile(countryEnabled: countryEnabled, rules: rules, lastAppliedCount: lastAppliedCount, hasApplied: hasApplied, events: events))
-        } catch { setError("配置保存失败：\(error.localizedDescription)", source: .profile) }
+            profileRevision = try profileStorage.save(SavedProfile(countryEnabled: countryEnabled, rules: rules,
+                lastAppliedCount: lastAppliedCount, hasApplied: hasApplied, events: events), replacing: profileRevision)
+        } catch {
+            // Keep the draft available for export. Background activity must not
+            // retry an old snapshot after another instance has changed the file.
+            persistenceBlocked = true
+            reportProfileFailure("配置未保存：\(error.localizedDescription)")
+        }
+    }
+
+    private func reportProfileFailure(_ message: String) {
+        profileRecoveryMessage = message
+        setError(message, source: .profile)
+    }
+
+    /// Explicit recovery replaces only the local plan and event history. It
+    /// never applies routes or sends a command to the privileged service.
+    func reloadProfile() {
+        guard !isBusy, !isQuitting else { return }
+        do {
+            let snapshot = try profileStorage.load()
+            let saved = snapshot.profile ?? SavedProfile()
+            rules = saved.rules
+            countryEnabled = saved.countryEnabled
+            events = saved.events
+            profileRevision = snapshot.revision
+            persistenceBlocked = false
+            profileRecoveryMessage = nil
+            clearError(from: .profile)
+            compilePlan()
+        } catch {
+            persistenceBlocked = true
+            reportProfileFailure("读取最新配置失败，当前规则仍保留在窗口中：\(error.localizedDescription)")
+        }
     }
 }

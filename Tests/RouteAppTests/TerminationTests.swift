@@ -104,5 +104,73 @@ final class TerminationTests: XCTestCase {
         let success = await store.prepareForTermination()
         XCTAssertTrue(success)
         XCTAssertEqual(attempts, 2)
+        XCTAssertTrue(store.dnsRestorationConfirmed)
+        XCTAssertEqual(store.dnsStatusText, "未启用")
+    }
+
+    @MainActor
+    func testStopKeepsDNSRecoveryVisibleUntilWithdrawalIsConfirmed() async {
+        var attempts = 0
+        var result = clean()
+        result.phase = "disabled"
+        let store = AppStore(loadPersistedState: false, stopService: {
+            attempts += 1
+            var response = result
+            response.dnsWithdrawn = attempts > 1
+            response.dnsMessage = attempts > 1 ? "已撤销" : "等待系统撤销本机解析配置"
+            return response
+        })
+        store.serviceInstalled = true
+        await store.rollback()
+        XCTAssertEqual(store.activeRouteCount, 0)
+        XCTAssertEqual(store.connection.kind, .recovering)
+        XCTAssertEqual(store.connection.primaryAction, .retryStop)
+        XCTAssertEqual(store.serviceDNSWithdrawn, false)
+        XCTAssertFalse(store.dnsRestorationConfirmed)
+        XCTAssertEqual(store.dnsStatusText, "撤回中")
+        XCTAssertTrue(store.hasApplied)
+        XCTAssertNotNil(store.lastError)
+
+        await store.rollback()
+        XCTAssertEqual(store.connection.kind, .off)
+        XCTAssertEqual(store.serviceDNSWithdrawn, true)
+        XCTAssertTrue(store.dnsRestorationConfirmed)
+        XCTAssertEqual(store.dnsStatusText, "未启用")
+        XCTAssertFalse(store.hasApplied)
+        XCTAssertNil(store.lastError)
+    }
+
+    @MainActor
+    func testStopWithMissingDNSFieldsIsUnknownAndDoesNotClaimOff() async {
+        var result = clean()
+        result.phase = "disabled"
+        result.dnsActive = nil
+        result.dnsWithdrawn = nil
+        let store = AppStore(loadPersistedState: false, stopService: { result })
+        store.serviceInstalled = true
+        await store.rollback()
+        XCTAssertEqual(store.connection.kind, .recovering)
+        XCTAssertEqual(store.dnsStatusText, "待确认")
+        XCTAssertNil(store.serviceDNSActive)
+        XCTAssertNil(store.serviceDNSWithdrawn)
+        XCTAssertFalse(store.dnsRestorationConfirmed)
+    }
+
+    @MainActor
+    func testExitWithUnconfirmedDNSCancelsTerminationAndKeepsRecoveryAction() async {
+        var result = clean()
+        result.phase = "disabled"
+        result.dnsWithdrawn = nil
+        // A reported failure skips retries, so this assertion does not wait for
+        // the retry timer or depend on any live configd state.
+        result.failed = 1
+        let store = AppStore(loadPersistedState: false, stopForExit: { result })
+        store.serviceInstalled = true
+        let success = await store.prepareForTermination()
+        XCTAssertFalse(success)
+        XCTAssertFalse(store.isQuitting)
+        XCTAssertEqual(store.connection.kind, .recovering)
+        XCTAssertEqual(store.connection.primaryAction, .retryStop)
+        XCTAssertEqual(store.dnsStatusText, "待确认")
     }
 }

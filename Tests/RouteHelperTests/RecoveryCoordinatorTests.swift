@@ -31,7 +31,7 @@ private final class RecoveryTestEngine: RecoveryEngine {
         active = 0; return Report()
     }
     func status() throws -> Report { var report = Report(); report.active = active; report.verified = true; return reportTransform(report) }
-    func inspectHealth() throws -> RouteHealth {
+    func inspectHealth(desiredRoutes: [String]) throws -> RouteHealth {
         inspections += 1
         return RouteHealth(report: try status(), hasMissingOwnedRoutes: missing)
     }

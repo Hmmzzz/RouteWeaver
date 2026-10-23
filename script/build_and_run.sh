@@ -57,8 +57,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>RouteWeaver</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleShortVersionString</key><string>1.0.4</string>
-<key>CFBundleVersion</key><string>24</string>
+<key>CFBundleShortVersionString</key><string>1.0.5</string>
+<key>CFBundleVersion</key><string>25</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 <key>NSHighResolutionCapable</key><true/>

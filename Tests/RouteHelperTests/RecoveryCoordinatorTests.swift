@@ -110,18 +110,74 @@ final class RecoveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(environment.compilations, 1)
         XCTAssertEqual(routes, environment.engine.requests.last?.routes)
     }
-    func testReplacingPolicyWithdrawsOldPlanUntilNewPlanIsApplied() throws {
+    func testVerifiedPolicyUpdateRetainsRoutesUntilIncrementalApplyAndWithdrawsDNS() throws {
         let environment = RecoveryEnvironment()
         var routes: [String] = []
         let coordinator = try environment.coordinator { _, value in routes = value }
         try environment.activate(coordinator)
+        let removals = environment.engine.removals
         _ = try coordinator.apply(routes: ["114.114.114.0/24"])
         XCTAssertTrue(routes.isEmpty)
+        XCTAssertEqual(environment.engine.active, 1)
+        XCTAssertEqual(environment.engine.removals, removals)
+        coordinator.refresh()
+        XCTAssertEqual(routes, ["114.114.114.0/24"])
+        XCTAssertEqual(environment.engine.removals, removals)
+        XCTAssertEqual(coordinator.status().phase, .active)
+        XCTAssertEqual(environment.compilations, 2)
+    }
+    func testPolicyUpdateRediscoversTopologyBeforeRetainingRoutes() throws {
+        let environment = RecoveryEnvironment()
+        var routes: [String] = []
+        let coordinator = try environment.coordinator { _, value in routes = value }
+        try environment.activate(coordinator)
+        let removals = environment.engine.removals
+        _ = try coordinator.apply(routes: ["114.114.114.0/24"])
+        environment.network = .init(gateway: "192.168.2.1", interface: "en1", exitNodeID: "exit-b", exitNodeName: "B", tailscaleInterfaces: ["utun9"])
         coordinator.refresh()
         XCTAssertTrue(routes.isEmpty)
+        XCTAssertEqual(environment.engine.removals, removals + 1)
+        XCTAssertEqual(environment.engine.active, 0)
+        XCTAssertEqual(environment.engine.adds, 1)
         environment.time += 2; coordinator.refresh()
+        XCTAssertEqual(environment.engine.adds, 2)
+        XCTAssertEqual(environment.engine.requests.last?.gateway, "192.168.2.1")
         XCTAssertEqual(routes, ["114.114.114.0/24"])
-        XCTAssertEqual(environment.compilations, 2)
+    }
+    func testIncompletePreviousPlanCannotUseIncrementalPolicyUpdate() throws {
+        let environment = RecoveryEnvironment()
+        environment.engine.reportTransform = { original in var report = original; report.skipped = 1; return report }
+        let coordinator = try environment.coordinator()
+        try environment.activate(coordinator)
+        let removals = environment.engine.removals
+        _ = try coordinator.apply(routes: ["114.114.114.0/24"])
+        coordinator.refresh()
+        XCTAssertEqual(environment.engine.removals, removals + 1)
+        XCTAssertEqual(environment.engine.active, 0)
+        XCTAssertEqual(environment.engine.adds, 1)
+    }
+    func testFailedIncrementalApplyWithdrawsDNSAndCleansUpBeforeRetry() throws {
+        let environment = RecoveryEnvironment()
+        var routes: [String] = []
+        let coordinator = try environment.coordinator { _, value in routes = value }
+        try environment.activate(coordinator)
+        let removals = environment.engine.removals
+        _ = try coordinator.apply(routes: ["114.114.114.0/24"])
+        environment.engine.reportTransform = { original in var report = original; report.failed = 1; return report }
+        coordinator.refresh()
+        XCTAssertTrue(routes.isEmpty)
+        XCTAssertEqual(environment.engine.removals, removals)
+        XCTAssertEqual(coordinator.status().phase, .backingOff)
+        coordinator.refresh()
+        XCTAssertEqual(environment.engine.removals, removals)
+        environment.engine.reportTransform = { $0 }
+        environment.time += 2; coordinator.refresh()
+        XCTAssertEqual(environment.engine.removals, removals + 1)
+        XCTAssertEqual(environment.engine.active, 0)
+        XCTAssertTrue(routes.isEmpty)
+        environment.time += 2; coordinator.refresh()
+        XCTAssertEqual(environment.engine.adds, 3)
+        XCTAssertEqual(routes, ["114.114.114.0/24"])
     }
     func testTopologyChangeCannotPublishOldPlanWhenRollbackFails() throws {
         let environment = RecoveryEnvironment()

@@ -33,7 +33,7 @@ bash script/test_uninstall.sh
 python3 script/check_publication.py
 ```
 
-`test.sh` 运行 Swift 测试、路由快照 fixture、C 网络统计协议检查、Helper 非法输入检查，以及诊断客户端的离线会话测试；卸载 fixture 在隔离临时目录中验证清理逻辑。公开文件检查用于排查常见敏感内容，不能替代对暂存区、Git 历史、发布附件及新增截图的审阅。
+`test.sh` 运行 Swift 测试、路由快照 fixture、C 网络统计协议检查、Helper 非法输入检查、安装身份替换 fixture，以及诊断客户端的离线会话测试。安装身份 fixture 仅编译并运行临时签名测试程序，验证启动前后身份捕获与暂存文件替换的拒绝行为，不调用安装或管理员授权；DNS 集成测试仅监听临时 loopback 端口，使用受控上游，不改系统 DNS。卸载 fixture 在隔离临时目录中验证清理逻辑。上述临时目录均在退出时清理。公开文件检查用于排查常见敏感内容，不能替代对暂存区、Git 历史、发布附件及新增截图的审阅。
 
 `script/validate_live_*.py` 会真实修改网络，只在理解脚本且已关闭分流的测试环境中手动运行。
 

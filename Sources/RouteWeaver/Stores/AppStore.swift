@@ -9,7 +9,7 @@ import AppKit
 @MainActor @Observable
 final class AppStore {
     var selection: AppSection = .overview
-    var rules: [RouteRule] = []
+    private(set) var rules: [RouteRule] = []
     var countryRoutes: [String] = []
     var countryEnabled = true
     var isBusy = false
@@ -94,6 +94,7 @@ final class AppStore {
     @ObservationIgnored private var compiled: [IPv4CIDR] = []
     @ObservationIgnored private var persistenceBlocked = false
     @ObservationIgnored private let profileStorage: ProfileStorage
+    @ObservationIgnored private let saveProfile: (SavedProfile, ProfileStorage.Revision) throws -> ProfileStorage.Revision
     @ObservationIgnored private var profileRevision = ProfileStorage.Revision.missing
     private var appliedDigest: String?
     private var planDigest = ""
@@ -106,9 +107,11 @@ final class AppStore {
     /// Tests can opt out of all user files and background work.
     init(loadPersistedState: Bool = true,
          profileStorage: ProfileStorage = ProfileStorage(),
+         saveProfile: ((SavedProfile, ProfileStorage.Revision) throws -> ProfileStorage.Revision)? = nil,
          stopService: @escaping () async throws -> ServiceResponse = { try await PrivilegedClient.stop() },
          stopForExit: (() async throws -> ServiceResponse)? = nil) {
         self.profileStorage = profileStorage
+        self.saveProfile = saveProfile ?? { try profileStorage.save($0, replacing: $1) }
         self.stopService = stopService
         self.stopForExit = stopForExit ?? { try await PrivilegedClient.stopForExit() }
         serviceInstalled = FileManager.default.fileExists(atPath: ServicePaths.executable)
@@ -200,8 +203,7 @@ final class AppStore {
         let rule = RouteRule(cidr: parsed.description, action: action, note: note)
         try validate(rules + [rule])
         rules.append(rule)
-        record("添加自定义规则", "\(parsed) · \(action == .direct ? "直连" : "Exit node")", .info)
-        rebuildPlan()
+        record("添加自定义规则", "\(parsed) · \(action == .direct ? "直连" : "Exit node")", .info, rebuildingPlan: true)
     }
 
     func updateRule(id: UUID, cidr: String, action: RuleAction, note: String) throws {
@@ -214,19 +216,24 @@ final class AppStore {
         candidate[index].note = note
         try validate(candidate)
         rules = candidate
-        record("更新自定义规则", parsed.description, .info)
-        rebuildPlan()
+        record("更新自定义规则", parsed.description, .info, rebuildingPlan: true)
     }
 
     func deleteRule(id: UUID) { guard !isBusy, !isQuitting else { return }; rules.removeAll { $0.id == id }; rebuildPlan() }
     func toggleRule(id: UUID) {
         guard !isBusy, let index = rules.firstIndex(where: { $0.id == id }) else { return }
-        rules[index].enabled.toggle()
-        rebuildPlan()
+        var candidate = rules
+        candidate[index].enabled.toggle()
+        do {
+            try validate(candidate)
+            rules = candidate
+            rebuildPlan()
+        } catch { setError(error.localizedDescription, source: .rules) }
     }
 
     func importRules(text: String) throws {
-        guard !isBusy, text.utf8.count <= 2 * 1024 * 1024 else { throw AppFailure("导入文件过大或当前正在执行操作。") }
+        guard !isBusy else { throw AppFailure("请等待当前操作完成。") }
+        try RulesArchive.validateInput(text)
         var imported: [RouteRule]
         if text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[") {
             imported = try JSONDecoder().decode([RouteRule].self, from: Data(text.utf8))
@@ -255,14 +262,11 @@ final class AppStore {
         imported = imported.filter { seen.insert("\($0.action.rawValue):\($0.cidr)").inserted }
         try validate(rules + imported)
         rules += imported
-        record("导入规则", "新增 \(imported.count) 条；重复项已跳过。", .success)
-        rebuildPlan()
+        record("导入规则", "新增 \(imported.count) 条；重复项已跳过。", .success, rebuildingPlan: true)
     }
 
-    func exportRules() -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return String(decoding: (try? encoder.encode(rules)) ?? Data("[]".utf8), as: UTF8.self)
+    func exportRules() throws -> String {
+        String(decoding: try RulesArchive.encode(rules), as: UTF8.self)
     }
 
     func classify(_ ip: String) -> String {
@@ -515,8 +519,7 @@ final class AppStore {
             countryRoutes = strings
             datasetDate = date
             clearError(from: .dataset)
-            record("国内规则集已更新", "APNIC · \(cidrs.count) 个 IPv4 网段；需要应用后才改变系统路由。", .success)
-            rebuildPlan()
+            record("国内规则集已更新", "APNIC · \(cidrs.count) 个 IPv4 网段；需要应用后才改变系统路由。", .success, rebuildingPlan: true)
         } catch { setError(error.localizedDescription, source: .dataset); record("规则集更新失败", error.localizedDescription, .error) }
     }
 
@@ -538,20 +541,21 @@ final class AppStore {
     }
 
     private func validate(_ candidate: [RouteRule]) throws {
-        guard candidate.count <= 20000 else { throw AppFailure("自定义规则最多 20,000 条。") }
+        try RulesArchive.validate(candidate, replacing: rules)
         _ = try PolicyCompiler.compile(countryCIDRs: countryEnabled ? countryRoutes : [], rules: candidate, excludedAddresses: [])
     }
 
-    private func record(_ title: String, _ detail: String, _ kind: EventKind) {
+    private func record(_ title: String, _ detail: String, _ kind: EventKind, rebuildingPlan: Bool = false) {
         events.insert(ActivityEvent(title: title, detail: detail, kind: kind), at: 0)
         events = Array(events.prefix(200))
+        if rebuildingPlan { compilePlan() }
         persist()
     }
     private func persist() {
         guard !persistenceBlocked else { return }
         do {
-            profileRevision = try profileStorage.save(SavedProfile(countryEnabled: countryEnabled, rules: rules,
-                lastAppliedCount: lastAppliedCount, hasApplied: hasApplied, events: events), replacing: profileRevision)
+            profileRevision = try saveProfile(SavedProfile(countryEnabled: countryEnabled, rules: rules,
+                lastAppliedCount: lastAppliedCount, hasApplied: hasApplied, events: events), profileRevision)
         } catch {
             // Keep the draft available for export. Background activity must not
             // retry an old snapshot after another instance has changed the file.

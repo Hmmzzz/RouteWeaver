@@ -12,4 +12,5 @@ BIN_DIR="$(swift build --show-bin-path --disable-sandbox --scratch-path "$TEST_D
 "$ROOT_DIR/script/test_route_snapshot.sh"
 "$ROOT_DIR/script/check_route_statistics.sh"
 "$ROOT_DIR/script/check_helper_inputs.sh" "$BIN_DIR/RouteWeaverHelper"
+bash "$ROOT_DIR/script/check_installer_identity.sh"
 python3 "$ROOT_DIR/script/test_live_service_session.py"

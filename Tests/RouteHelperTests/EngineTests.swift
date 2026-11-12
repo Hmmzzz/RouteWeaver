@@ -108,6 +108,21 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(result.added, 1); XCTAssertEqual(result.active, 1); XCTAssertTrue(result.verified)
         XCTAssertTrue(store.value.records.allSatisfy(\.confirmed))
     }
+    func testIncrementalApplyPreservesUnchangedRouteAndMutatesOnlyDifferences() throws {
+        let store = MemoryJournal(), table = MemoryTable()
+        let engine = Engine(store: store, table: table)
+        _ = try engine.apply(request(["223.5.5.0/24", "223.6.6.0/24"]))
+        let retained = try XCTUnwrap(store.value.records.first { $0.cidr == "223.5.5.0/24" })
+        table.adds.removeAll(); table.deletes.removeAll()
+        let result = try engine.apply(request(["223.5.5.0/24", "114.114.114.0/24"]))
+        XCTAssertEqual(table.deletes.map(\.cidr), ["223.6.6.0/24"])
+        XCTAssertEqual(table.adds.map(\.cidr), ["114.114.114.0/24"])
+        XCTAssertEqual(store.value.records.first { $0.cidr == retained.cidr }, retained)
+        XCTAssertEqual(result.active, 2); XCTAssertEqual(result.added, 1); XCTAssertEqual(result.removed, 1)
+        XCTAssertEqual(result.failed, 0); XCTAssertEqual(result.pending, 0); XCTAssertTrue(result.verified)
+        XCTAssertEqual(try engine.rollback().removed, 2)
+        XCTAssertTrue(table.routes.isEmpty)
+    }
     func testPreflightFailurePerformsNoMutationOrSave() {
         let store = MemoryJournal(), table = MemoryTable()
         let engine = Engine(store: store, table: table, preflight: { _, _ in throw HelperError("disconnected") })

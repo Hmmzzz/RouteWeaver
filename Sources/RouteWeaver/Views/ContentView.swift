@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showProfileReloadConfirmation = false
     @State private var profileExportDocument = RulesDocument(text: "")
     @State private var profileExportError: String?
+    @State private var profileExportWarning: String?
     @FocusState private var focusedPage: AppSection?
 
     var body: some View {
@@ -144,11 +145,19 @@ struct ContentView: View {
             if let profileExportError {
                 Text("导出失败：" + profileExportError).font(.caption).foregroundStyle(.red)
             }
+            if let profileExportWarning {
+                Text(profileExportWarning).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
             HStack(spacing: 10) {
                 Button("导出当前规则…") {
                     profileExportError = nil
-                    profileExportDocument = RulesDocument(text: store.exportRules())
-                    showProfileExport = true
+                    profileExportWarning = nil
+                    do {
+                        let text = try store.exportRules()
+                        profileExportWarning = RulesArchive.migrationWarning(for: text)
+                        profileExportDocument = RulesDocument(text: text)
+                        showProfileExport = true
+                    } catch { profileExportError = error.localizedDescription }
                 }
                 Button("读取磁盘版本…") { showProfileReloadConfirmation = true }
             }

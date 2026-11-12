@@ -33,6 +33,8 @@ enum DNSClientTransport: Equatable { case udp, tcp }
 
 final class DNSProcessor {
     static let maximumRequestsPerPeer = 8
+    static let maximumCacheEntries = 512
+    static let bypassCacheLifetime: TimeInterval = 5
     typealias DomesticLookup = (DNSQuestion, @escaping (DNSAAnswer?) -> Void) -> Void
     typealias OriginalLookup = (Data, DNSClientTransport, @escaping (Data?) -> Void) -> Void
     typealias CancellableDomesticLookup = (DNSQuestion, TimeInterval, @escaping (DNSDomesticResult) -> Void) -> DNSCancellation
@@ -48,7 +50,9 @@ final class DNSProcessor {
     private var networks: DNSDirectNetworks
     private let domains: Set<String>
     private var stopped = false
-    private struct Cache { let answer: DNSAAnswer; let expires: TimeInterval }
+    // A nil answer caches only the decision to skip the domestic probe. Every
+    // client request still goes to the original resolver with its exact packet.
+    private struct Cache { let answer: DNSAAnswer?; let expires: TimeInterval }
     private final class Pending {
         let id: UUID
         let circuitEpoch: UInt64
@@ -245,8 +249,9 @@ final class DNSProcessor {
     private func lookup(_ query: DNSQuestion, subscriber: UUID) {
         guard let request = requests[subscriber] else { return }
         if let entry = cache[query.name], entry.expires > time() {
+            guard let answer = entry.answer else { fallback(subscriber); return }
             let remaining = UInt32(max(0, floor(entry.expires - time())))
-            accept(DNSAAnswer(addresses: entry.answer.addresses, ttl: min(remaining, entry.answer.ttl)), for: subscriber); return
+            accept(DNSAAnswer(addresses: answer.addresses, ttl: min(remaining, answer.ttl)), for: subscriber); return
         }
         cache.removeValue(forKey: query.name)
         guard pending.values.reduce(0, { $0 + $1.subscribers.count }) < 32 else { fallback(subscriber); return }
@@ -298,11 +303,20 @@ final class DNSProcessor {
                 if halfOpenID == id { halfOpenID = nil }
             }
         }
-        if let answer, answer.ttl > 0, !answer.addresses.isEmpty, answer.addresses.count <= 64,
-           answer.addresses.allSatisfy(networks.contains) {
-            if cache.count >= 512 { cache = cache.filter { $0.value.expires > time() } }
-            if cache.count >= 512, let oldest = cache.min(by: { $0.value.expires < $1.value.expires })?.key { cache.removeValue(forKey: oldest) }
-            cache[name] = Cache(answer: answer, expires: time() + Double(min(answer.ttl, 60)))
+        if case .response = result {
+            let direct = answer.map { !$0.addresses.isEmpty && $0.addresses.count <= 64 &&
+                $0.addresses.allSatisfy(networks.contains) } ?? false
+            let lifetime = direct ? Double(min(answer?.ttl ?? 0, 60)) :
+                min(answer.map { Double($0.ttl) } ?? Self.bypassCacheLifetime, Self.bypassCacheLifetime)
+            // Transport errors and cancellation never populate this cache.
+            // Respect a zero/short positive TTL even for a non-direct result.
+            if lifetime > 0 {
+                let now = time()
+                if cache.count >= Self.maximumCacheEntries { cache = cache.filter { $0.value.expires > now } }
+                if cache.count >= Self.maximumCacheEntries,
+                   let oldest = cache.min(by: { $0.value.expires < $1.value.expires })?.key { cache.removeValue(forKey: oldest) }
+                cache[name] = Cache(answer: direct ? answer : nil, expires: now + lifetime)
+            }
         }
         for subscriber in waiting.subscribers {
             requests[subscriber]?.domesticName = nil

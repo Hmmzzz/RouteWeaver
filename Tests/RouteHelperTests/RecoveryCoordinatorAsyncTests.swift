@@ -71,6 +71,63 @@ final class RecoveryCoordinatorAsyncTests: XCTestCase {
         XCTAssertFalse(fixture.publications.containsReady)
     }
 
+    func testStopDuringIncrementalApplyCleansRetainedAndLateAddedRoutes() throws {
+        let fixture = AsyncRecoveryFixture(), gate = AsyncRecoveryGate()
+        defer { gate.release() }
+        let coordinator = try fixture.coordinator()
+        try fixture.activate(coordinator)
+        let removals = fixture.engine.rollbacks
+        _ = try coordinator.apply(routes: fixture.routes + ["114.114.114.0/24"])
+        XCTAssertEqual(fixture.engine.active, 1)
+        XCTAssertTrue(fixture.publications.lastRoutes.isEmpty)
+        fixture.engine.applyHook = { _ in try gate.wait() }
+        let refreshDone = expectation(description: "interrupted incremental apply released")
+        coordinator.refreshAsync { refreshDone.fulfill() }
+        XCTAssertTrue(gate.waitUntilEntered())
+        XCTAssertEqual(fixture.engine.rollbacks, removals)
+        let stopped = expectation(description: "incremental effects cleaned")
+        DispatchQueue.global().async {
+            do {
+                let status = try coordinator.stop()
+                XCTAssertFalse(status.enabled); XCTAssertEqual(status.report.active, 0)
+            } catch { XCTFail("\(error)") }
+            stopped.fulfill()
+        }
+        XCTAssertTrue(eventually { !coordinator.status().enabled })
+        gate.release()
+        wait(for: [stopped, refreshDone], timeout: 1)
+        XCTAssertEqual(fixture.engine.active, 0)
+        XCTAssertEqual(fixture.engine.rollbacks, removals + 1)
+        XCTAssertTrue(fixture.publications.lastRoutes.isEmpty)
+        XCTAssertFalse(fixture.store.policy.enabled)
+    }
+
+    func testTopologyInvalidationDuringIncrementalApplyCleansBeforeRediscovery() throws {
+        let fixture = AsyncRecoveryFixture(), gate = AsyncRecoveryGate()
+        defer { gate.release() }
+        let coordinator = try fixture.coordinator()
+        try fixture.activate(coordinator)
+        let removals = fixture.engine.rollbacks
+        _ = try coordinator.apply(routes: fixture.routes + ["114.114.114.0/24"])
+        fixture.engine.applyHook = { _ in try gate.wait() }
+        let refreshDone = expectation(description: "topology interrupted incremental apply released")
+        coordinator.refreshAsync { refreshDone.fulfill() }
+        XCTAssertTrue(gate.waitUntilEntered())
+        let discoveries = fixture.discoveryCount
+        coordinator.networkTopologyInvalidated()
+        gate.release()
+        XCTAssertTrue(eventually { fixture.engine.rollbacks == removals + 1 && fixture.engine.active == 0 })
+        XCTAssertEqual(fixture.discoveryCount, discoveries)
+        XCTAssertTrue(fixture.publications.lastRoutes.isEmpty)
+        fixture.engine.applyHook = nil
+        coordinator.networkTopologySettled()
+        wait(for: [refreshDone], timeout: 1)
+        XCTAssertEqual(fixture.engine.adds, 2)
+        fixture.clock.advance(2); coordinator.refresh()
+        XCTAssertEqual(fixture.engine.adds, 3)
+        XCTAssertEqual(fixture.engine.active, 2)
+    }
+
     func testRefreshFloodCoalescesIntoOneFollowingObservationAndReleasesAllWaiters() throws {
         let fixture = AsyncRecoveryFixture(), gate = AsyncRecoveryGate()
         defer { gate.release() }

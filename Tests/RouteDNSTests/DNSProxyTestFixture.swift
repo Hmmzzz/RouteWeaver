@@ -10,6 +10,7 @@ func startDNSProxy(
     maximumAttempts: Int = 5,
     reservePort: () throws -> DNSLoopbackPortReservation = { try DNSLoopbackPortReservation() },
     beforeStart: (UInt16) throws -> Void = { _ in },
+    sendUDP: @escaping ScopedDNSProxy.UDPReplySender = ScopedDNSProxy.sendDatagram,
     makeProcessor: () throws -> DNSProcessor
 ) throws -> (processor: DNSProcessor, proxy: ScopedDNSProxy) {
     try retryDNSAddressInUse(maximumAttempts: maximumAttempts) {
@@ -17,7 +18,7 @@ func startDNSProxy(
         defer { reservation.release() }
         let processor = try makeProcessor()
         let proxy: ScopedDNSProxy
-        do { proxy = try ScopedDNSProxy(port: reservation.port, processor: processor) }
+        do { proxy = try ScopedDNSProxy(port: reservation.port, processor: processor, sendUDP: sendUDP) }
         catch { processor.stop(); throw error }
         reservation.release()
         do {

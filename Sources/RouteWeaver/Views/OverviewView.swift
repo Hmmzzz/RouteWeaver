@@ -23,6 +23,10 @@ struct OverviewView: View {
             .padding(WeaveStyle.pageInset).frame(maxWidth: WeaveStyle.pageWidth).frame(maxWidth: .infinity)
         }
         .sheet(isPresented: $showPreview) { RoutePreviewView(routes: store.plannedRoutes) }
+        .onChange(of: lookupIP) { _, _ in lookupResult = nil }
+        .onChange(of: store.plannedRoutes) { _, _ in
+            if lookupResult != nil { lookup() }
+        }
     }
 
     private var hero: some View {

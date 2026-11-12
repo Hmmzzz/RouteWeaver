@@ -4,6 +4,15 @@ import RouteIPC
 @testable import RouteHelper
 
 final class ServiceIdentityTests: XCTestCase {
+    func testRunningIdentityMatchesUnchangedExecutableAndRejectsAnotherSignedProgram() throws {
+        let pinned = try SignedCodeIdentity.runningHash()
+        let executable = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        XCTAssertEqual(pinned, try ServiceIdentity.staticHash(path: executable))
+        XCTAssertNoThrow(try SignedCodeIdentity.validateExecutable(path: executable, expectedHash: pinned))
+        XCTAssertThrowsError(try SignedCodeIdentity.validateExecutable(path: "/usr/bin/true", expectedHash: pinned))
+        XCTAssertThrowsError(try SignedCodeIdentity.validateExecutable(path: executable, expectedHash: Data()))
+    }
+
     private func withConnection(_ body: (Int32) throws -> Void) throws {
         var descriptors: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {

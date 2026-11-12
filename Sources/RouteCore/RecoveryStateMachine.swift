@@ -10,6 +10,7 @@ public struct RecoveryStateMachine {
     public private(set) var retryAt: TimeInterval = 0
     public private(set) var failures = 0
     private var needsCleanup = false
+    private var policyChanged = false
     private var applied: String?
     private var candidate: String?
     private var stableSince: TimeInterval = 0
@@ -17,11 +18,19 @@ public struct RecoveryStateMachine {
     public init(stabilityInterval: TimeInterval = 2) { self.stabilityInterval = stabilityInterval }
 
     public mutating func enable() {
-        enabled = true; needsCleanup = true; candidate = nil
+        enabled = true; needsCleanup = true; candidate = nil; policyChanged = false
         failures = 0; retryAt = 0; phase = .waitingNetwork
     }
+    /// Keep the last applied fingerprint as a cleanup barrier while replacing
+    /// a verified policy. Callers must still rediscover the network before apply.
+    @discardableResult
+    public mutating func updatePolicy() -> Bool {
+        guard enabled, phase == .active, !needsCleanup, applied != nil else { return false }
+        policyChanged = true; phase = .applying
+        return true
+    }
     public mutating func disable() {
-        enabled = false; needsCleanup = true; candidate = nil
+        enabled = false; needsCleanup = true; candidate = nil; policyChanged = false
         failures = 0; retryAt = 0; phase = .removing
     }
     public mutating func invalidateTopology() {
@@ -35,7 +44,7 @@ public struct RecoveryStateMachine {
         if needsCleanup { phase = .removing; return .rollback }
         guard enabled else { phase = .disabled; return .none }
         guard let fingerprint else { candidate = nil; phase = .waitingNetwork; return .none }
-        if applied == fingerprint && !repairNeeded { phase = .active; return .none }
+        if applied == fingerprint && !repairNeeded && !policyChanged { phase = .active; return .none }
         if candidate != fingerprint {
             candidate = fingerprint; stableSince = now; phase = .stabilizing; return .none
         }
@@ -44,14 +53,14 @@ public struct RecoveryStateMachine {
     }
     public mutating func didRollback(success: Bool, now: TimeInterval) {
         if success {
-            needsCleanup = false; applied = nil; candidate = nil
+            needsCleanup = false; applied = nil; candidate = nil; policyChanged = false
             phase = enabled ? .waitingNetwork : .disabled
             // Preserve the apply failure backoff through successful cleanup.
         } else { fail(now: now) }
     }
     public mutating func didApply(fingerprint: String, success: Bool, now: TimeInterval) {
         if success {
-            applied = fingerprint; candidate = fingerprint; failures = 0
+            applied = fingerprint; candidate = fingerprint; failures = 0; policyChanged = false
             retryAt = 0; phase = .active
         } else {
             // A partial installation is treated as owned state requiring cleanup.

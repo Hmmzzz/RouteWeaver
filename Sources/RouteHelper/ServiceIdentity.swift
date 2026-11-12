@@ -25,17 +25,7 @@ struct ServiceConfiguration: Codable {
 
 enum ServiceIdentity {
     static func staticHash(path: String) throws -> Data {
-        var code: SecStaticCode?
-        try require(SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess && code != nil, "无法读取程序签名")
-        // Validate the executable itself, avoiding mutable FinderInfo on the enclosing bundle.
-        try require(SecStaticCodeCheckValidity(code!, SecCSFlags(rawValue: kSecCSCheckAllArchitectures), nil) == errSecSuccess, "程序签名已损坏")
-        return try hash(code!)
-    }
-    private static func hash(_ code: SecStaticCode) throws -> Data {
-        var info: CFDictionary?
-        try require(SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess, "无法读取签名标识")
-        guard let dictionary = info as? [String: Any], let value = dictionary[kSecCodeInfoUnique as String] as? Data, !value.isEmpty else { throw HelperError("程序缺少代码签名摘要") }
-        return value
+        try SignedCodeIdentity.staticHash(path: path)
     }
     static func authenticate(fd: Int32, configuration: ServiceConfiguration) throws {
         var uid: uid_t = 0; var gid: gid_t = 0
@@ -47,10 +37,7 @@ enum ServiceIdentity {
         var guest: SecCode?
         let attributes = [kSecGuestAttributeAudit as String: audit] as CFDictionary
         try require(SecCodeCopyGuestWithAttributes(nil, attributes, [], &guest) == errSecSuccess && guest != nil, "无法读取客户端动态签名")
-        try require(SecCodeCheckValidity(guest!, [], nil) == errSecSuccess, "客户端代码签名无效")
-        var staticCode: SecStaticCode?
-        try require(SecCodeCopyStaticCode(guest!, [], &staticCode) == errSecSuccess && staticCode != nil, "客户端签名标识不可用")
-        let peerHash = try hash(staticCode!)
+        let peerHash = try SignedCodeIdentity.dynamicHash(guest!)
         try require(peerHash == configuration.appCodeHash, "客户端版本与授权版本不匹配，请重新安装后台服务")
     }
 }

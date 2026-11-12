@@ -26,11 +26,20 @@ int rw_snapshot(RWRoute **routes, size_t *count) {
     *routes = NULL; *count = 0;
     int mib[] = { CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_DUMP, 0 };
     size_t size = 0;
-    if (sysctl(mib, 6, NULL, &size, NULL, 0) < 0) return errno;
-    if (size > 128 * 1024 * 1024) return EOVERFLOW;
-    char *data = malloc(size ? size : 1);
-    if (!data) return ENOMEM;
-    if (sysctl(mib, 6, data, &size, NULL, 0) < 0) { int e = errno; free(data); return e; }
+    char *data = NULL;
+    /* The table may grow between the size probe and the read. Discard partial
+       dumps and retry from a fresh size, with a fixed allocation/attempt bound. */
+    for (unsigned int attempt = 0; attempt < 3; ++attempt) {
+        size = 0;
+        if (sysctl(mib, 6, NULL, &size, NULL, 0) < 0) return errno;
+        if (size > 128 * 1024 * 1024) return EOVERFLOW;
+        data = malloc(size ? size : 1);
+        if (!data) return ENOMEM;
+        if (sysctl(mib, 6, data, &size, NULL, 0) == 0) break;
+        int e = errno;
+        free(data); data = NULL;
+        if (e != ENOMEM || attempt == 2) return e;
+    }
     size_t capacity = size / sizeof(struct rt_msghdr) + 1;
     RWRoute *result = calloc(capacity, sizeof(RWRoute));
     if (!result) { free(data); return ENOMEM; }

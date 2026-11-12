@@ -145,11 +145,15 @@ final class DNSOriginalUpstreamTests: XCTestCase {
         wait(for: [started], timeout: 1)
         handles.forEach { $0.cancel() }
         wait(for: [done], timeout: 1)
-        let next = expectation(description: "next request gets its short deadline")
-        upstream.lookup(makeQuery("www.google.com"), timeout: 0.02) { response in
+        let next = expectation(description: "newly admitted request can be cancelled")
+        let handle = upstream.lookup(makeQuery("www.google.com")) { response in
             XCTAssertNil(response); next.fulfill()
         }
-        wait(for: [nextStarted, next], timeout: 1)
+        // This test verifies released capacity, not scheduler latency. A 20 ms
+        // admission budget can expire under build/CI load before opening a socket.
+        wait(for: [nextStarted], timeout: 2)
+        handle.cancel()
+        wait(for: [next], timeout: 1)
         upstream.stop()
     }
 

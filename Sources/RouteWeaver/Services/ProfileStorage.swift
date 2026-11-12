@@ -68,7 +68,7 @@ struct ProfileStorage {
         let data = try readData()
         let profile = try data.map { try JSONDecoder().decode(SavedProfile.self, from: $0) }
         if let profile {
-            guard profile.version == 1, profile.rules.count <= 20000 else { throw AppFailure("配置版本或规则数量不受支持。") }
+            guard profile.version == 1, profile.rules.count <= RulesArchive.maximumRuleCount else { throw AppFailure("配置版本或规则数量不受支持。") }
         }
         return Snapshot(profile: profile, revision: Revision(data: data))
     }

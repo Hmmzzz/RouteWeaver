@@ -42,6 +42,9 @@ static unsigned int sysctl_calls;
 static unsigned int unavailable_index = UINT32_MAX;
 static const char *name_prefix = "en";
 static int sysctl_error;
+static unsigned int read_failures;
+static int read_error;
+static int oversized_after_failure;
 
 static void expected_name(unsigned int index, char *name) {
     memset(name, 0, IF_NAMESIZE);
@@ -66,10 +69,17 @@ static int fixture_sysctl(int *mib, u_int count, void *output, size_t *length,
     CHECK(input == NULL && input_length == 0 && length != NULL);
     if (sysctl_error) { errno = sysctl_error; return -1; }
     if (output) {
+        if (read_failures) {
+            --read_failures;
+            // Incomplete dumps must never reach the route decoder.
+            memset(output, 0xff, *length);
+            errno = read_error;
+            return -1;
+        }
         CHECK(*length >= fixture_size);
         memcpy(output, fixture, fixture_size);
     }
-    *length = fixture_size;
+    *length = oversized_after_failure && sysctl_calls > 2 ? 128 * 1024 * 1024 + 1 : fixture_size;
     return 0;
 }
 
@@ -88,6 +98,7 @@ static void reset_fixture(void) {
     unavailable_index = UINT32_MAX;
     name_prefix = "en";
     sysctl_error = 0;
+    read_failures = 0; read_error = ENOMEM; oversized_after_failure = 0;
 }
 
 static void reset_observations(void) {
@@ -241,6 +252,39 @@ static void snapshot_error_is_propagated(void) {
     ++scenarios;
 }
 
+static void growing_snapshot_retries_from_fresh_size(void) {
+    reset_fixture();
+    append_route(7, 0x01000000, 0xffffff00, 0xc0000201, owned_flags, 1);
+    read_failures = 2;
+    check_snapshot();
+    CHECK(sysctl_calls == 6 && total_lookups == 1);
+    ++scenarios;
+}
+
+static void growing_snapshot_has_bounded_retries(void) {
+    reset_fixture(); read_failures = 10;
+    RWRoute *routes = NULL; size_t count = 0;
+    CHECK(rw_snapshot(&routes, &count) == ENOMEM);
+    CHECK(sysctl_calls == 6 && routes == NULL && count == 0 && total_lookups == 0);
+    ++scenarios;
+}
+
+static void permanent_read_error_does_not_retry(void) {
+    reset_fixture(); read_failures = 10; read_error = EACCES;
+    RWRoute *routes = NULL; size_t count = 0;
+    CHECK(rw_snapshot(&routes, &count) == EACCES);
+    CHECK(sysctl_calls == 2 && routes == NULL && count == 0);
+    ++scenarios;
+}
+
+static void retry_still_enforces_size_limit(void) {
+    reset_fixture(); read_failures = 1; oversized_after_failure = 1;
+    RWRoute *routes = NULL; size_t count = 0;
+    CHECK(rw_snapshot(&routes, &count) == EOVERFLOW);
+    CHECK(sysctl_calls == 3 && routes == NULL && count == 0);
+    ++scenarios;
+}
+
 int main(void) {
     repeated_indices();
     changes_between_snapshots();
@@ -250,6 +294,10 @@ int main(void) {
     empty_snapshot();
     malformed_snapshot_is_rejected();
     snapshot_error_is_propagated();
+    growing_snapshot_retries_from_fresh_size();
+    growing_snapshot_has_bounded_retries();
+    permanent_read_error_does_not_retry();
+    retry_still_enforces_size_limit();
     printf("Route snapshot checks: %u scenarios, %u assertions passed\n", scenarios, assertions);
     return 0;
 }

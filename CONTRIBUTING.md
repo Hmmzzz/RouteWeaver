@@ -21,7 +21,7 @@ python3 script/check_publication.py
 ./script/build_and_run.sh --build-only
 ```
 
-`test.sh` 包含 Swift 测试、模拟路由快照、C 网络统计协议、Helper 非法输入和诊断客户端离线会话测试；卸载 fixture 使用隔离临时目录。`--build-only` 只生成应用和 ZIP，不启动应用。纯文档改动至少执行公开文件检查并检查链接；未运行的检查请在 PR 中说明。
+`test.sh` 包含 Swift 测试、模拟路由快照、C 网络统计协议、Helper 非法输入、安装身份替换和诊断客户端离线会话测试；安装身份和卸载 fixture 使用隔离临时目录，不执行真实安装。`--build-only` 只生成应用和 ZIP，不启动应用。纯文档改动至少执行公开文件检查并检查链接；未运行的检查请在 PR 中说明。
 
 `script/validate_live_*.py` 会真实修改网络，只能在理解脚本及影响的测试环境中手动运行。单元测试通过不代表真实分流、系统权限或 Helper 安装流程已验证。
 

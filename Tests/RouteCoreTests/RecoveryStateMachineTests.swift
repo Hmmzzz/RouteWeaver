@@ -107,6 +107,44 @@ final class RecoveryStateMachineTests: XCTestCase {
         var state = ready(); state.enable()
         XCTAssertEqual(state.decide(fingerprint: "A", now: 3), .rollback)
     }
+    func testVerifiedPolicyUpdateAppliesWithoutCleanupOrAnotherStabilityWait() {
+        var state = ready()
+        XCTAssertTrue(state.updatePolicy())
+        XCTAssertEqual(state.decide(fingerprint: "A", now: 2), .apply)
+        state.didApply(fingerprint: "A", success: true, now: 2)
+        XCTAssertEqual(state.decide(fingerprint: "A", now: 2), .none)
+        XCTAssertEqual(state.phase, .active)
+    }
+    func testPolicyUpdateKeepsTopologyCleanupBarrier() {
+        let fingerprints: [String?] = ["B", nil]
+        for fingerprint in fingerprints {
+            var state = ready()
+            XCTAssertTrue(state.updatePolicy())
+            XCTAssertEqual(state.decide(fingerprint: fingerprint, now: 3), .rollback)
+        }
+        var invalidated = ready()
+        XCTAssertTrue(invalidated.updatePolicy())
+        invalidated.invalidateTopology()
+        XCTAssertEqual(invalidated.decide(fingerprint: "A", now: 3), .rollback)
+    }
+    func testFailedPolicyUpdateRequiresFullCleanupAndBackoff() {
+        var state = ready()
+        XCTAssertTrue(state.updatePolicy())
+        XCTAssertEqual(state.decide(fingerprint: "A", now: 3), .apply)
+        state.didApply(fingerprint: "A", success: false, now: 3)
+        XCTAssertFalse(state.updatePolicy())
+        XCTAssertEqual(state.decide(fingerprint: "A", now: 4), .none)
+        XCTAssertEqual(state.decide(fingerprint: "A", now: 5), .rollback)
+    }
+    func testPolicyUpdateRejectsDisabledAndUnsettledStates() {
+        var state = RecoveryStateMachine()
+        XCTAssertFalse(state.updatePolicy())
+        state.enable()
+        XCTAssertFalse(state.updatePolicy())
+        state.didRollback(success: true, now: 0)
+        _ = state.decide(fingerprint: "A", now: 0)
+        XCTAssertFalse(state.updatePolicy())
+    }
     func testTopologyEventResumesDiscoveryAfterEarlierFailure() {
         var state = RecoveryStateMachine(); state.enable(); state.didRollback(success: true, now: 0)
         state.observationFailed(now: 10)

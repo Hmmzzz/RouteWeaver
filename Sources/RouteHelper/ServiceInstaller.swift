@@ -17,6 +17,7 @@ enum ServiceInstaller {
     }
     private static func installLocked(appBundlePath: String) throws -> String {
         try require(geteuid() == 0, "安装后台服务需要系统管理员授权")
+        let authorizedHelperHash = try SignedCodeIdentity.runningHash()
         let app = URL(fileURLWithPath: appBundlePath).standardizedFileURL.path
         try require(app == appBundlePath && app.hasSuffix(".app") && app.hasPrefix("/") && !app.utf8.contains(0), "应用安装来源无效")
         var console = stat()
@@ -28,18 +29,14 @@ enum ServiceInstaller {
         try validateUserExecutable(helper, owner: owner)
         // Pin the exact authorized build. Ad-hoc signatures work without distributing a developer key.
         let appHash = try ServiceIdentity.staticHash(path: executable)
-        let helperHash = try ServiceIdentity.staticHash(path: helper)
-        let runningPath = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
-        let runningHash = try ServiceIdentity.staticHash(path: runningPath)
-        try require(runningHash == helperHash, "安装器与应用内后台程序不匹配")
+        try SignedCodeIdentity.validateExecutable(path: helper, expectedHash: authorizedHelperHash)
         try secureDirectory("/Library/PrivilegedHelperTools", mode: 0o755)
         try secureDirectory("/Library/LaunchDaemons", mode: 0o755)
         try secureDirectory(ServicePaths.directory, mode: 0o700)
         let staged = "/Library/PrivilegedHelperTools/.routeweaver-" + UUID().uuidString
         defer { unlink(staged) }
         try copyExecutable(helper, to: staged, owner: owner)
-        let stagedHash = try ServiceIdentity.staticHash(path: staged)
-        try require(stagedHash == helperHash, "复制后的后台程序签名不匹配")
+        let stagedHash = try SignedCodeIdentity.validateExecutable(path: staged, expectedHash: authorizedHelperHash)
         let config = ServiceConfiguration(ownerUID: owner, appCodeHash: appHash, helperCodeHash: stagedHash)
         // Prepare all data before touching an existing service.
         let configData = try JSONEncoder().encode(config)

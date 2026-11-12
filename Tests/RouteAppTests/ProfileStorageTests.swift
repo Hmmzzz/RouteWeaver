@@ -142,6 +142,40 @@ final class ProfileStorageTests: XCTestCase {
     }
 
     @MainActor
+    func testRuleMutationsSaveOneCompleteSnapshotEachAndKeepConflictProtection() throws {
+        try withStorage { storage in
+            try storage.save(SavedProfile(countryEnabled: false), replacing: .missing)
+            var snapshots: [SavedProfile] = []
+            let store = AppStore(profileStorage: storage, saveProfile: { profile, revision in
+                snapshots.append(profile)
+                return try storage.save(profile, replacing: revision)
+            })
+            try store.addRule(cidr: "223.5.5.0/24", action: .direct, note: "added")
+            XCTAssertEqual(snapshots.count, 1)
+            XCTAssertEqual(snapshots.last?.rules.first?.note, "added")
+            XCTAssertEqual(snapshots.last?.events.first?.title, "添加自定义规则")
+            let id = try XCTUnwrap(store.rules.first?.id)
+            try store.updateRule(id: id, cidr: "223.5.5.0/24", action: .direct, note: "edited")
+            XCTAssertEqual(snapshots.count, 2)
+            XCTAssertEqual(snapshots.last?.rules.first?.note, "edited")
+            XCTAssertEqual(snapshots.last?.events.first?.title, "更新自定义规则")
+            try store.importRules(text: "223.6.6.0/24")
+            XCTAssertEqual(snapshots.count, 3)
+            XCTAssertEqual(snapshots.last?.rules.count, 2)
+            XCTAssertEqual(snapshots.last?.events.first?.title, "导入规则")
+
+            let another = AppStore(profileStorage: storage)
+            try another.addRule(cidr: "223.7.7.0/24", action: .direct, note: "another")
+            let diskBefore = try storage.load()
+            try store.addRule(cidr: "223.8.8.0/24", action: .direct, note: "draft")
+            XCTAssertEqual(snapshots.count, 4, "One failed save; never retry against an obsolete revision")
+            XCTAssertNotNil(store.profileRecoveryMessage)
+            XCTAssertEqual(try storage.load().revision, diskBefore.revision)
+            XCTAssertEqual(store.rules.last?.note, "draft")
+        }
+    }
+
+    @MainActor
     func testEmptyPlanCanStillStopAfterAProfileConflict() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("routeweaver-profile-tests-\(UUID().uuidString)", isDirectory: true)

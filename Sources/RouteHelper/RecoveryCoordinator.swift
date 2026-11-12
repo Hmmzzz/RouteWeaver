@@ -147,10 +147,16 @@ final class RecoveryCoordinator {
                 return status()
             }
             let next = DesiredPolicy(enabled: true, routes: validated)
+            // Retain routes only when the complete previous plan is verified
+            // and no worker or topology event can leave uncertain effects.
+            let canUpdateInPlace = work == nil && !cycleRunning && !mustCleanup && !topologyDebouncing &&
+                !verifiedRoutesForDependentConfiguration.isEmpty
             try store.save(next)
             invalidateWork()
-            policy = next; disableNeedsPersistence = false; appliedPlan = nil; machine.enable()
-            report.message = "规则已保存，正在等待网络稳定后自动应用"
+            policy = next; disableNeedsPersistence = false; appliedPlan = nil
+            let updatingInPlace = canUpdateInPlace && machine.updatePolicy()
+            if !updatingInPlace { machine.enable() }
+            report.message = updatingInPlace ? "规则已保存，正在核验网络并更新差异路由" : "规则已保存，正在等待网络稳定后自动应用"
             publish()
             if automaticScheduling { requestRefresh() }
             return status()
@@ -293,8 +299,7 @@ final class RecoveryCoordinator {
                 return
             }
         }
-        // Topology events and policy replacement still clean ownership first.
-        // The rule-update behavior is deliberately unchanged by this work.
+        // Topology events and uncertain policy replacements clean ownership first.
         if now < machine.retryAt { finishCycle(); return }
         if mustCleanup || machine.decide(fingerprint: currentNetwork?.fingerprint, now: now) == .rollback {
             performRollback { [self] in afterInitialCleanup() }

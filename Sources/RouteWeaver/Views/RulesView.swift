@@ -14,6 +14,7 @@ struct RulesView: View {
     @State private var showExport = false
     @State private var showPreview = false
     @State private var fileError: String?
+    @State private var exportWarning: String?
     @State private var document = RulesDocument(text: "")
 
     private var selectedRule: RouteRule? { store.rules.first { $0.id == selectedRuleID } }
@@ -31,6 +32,11 @@ struct RulesView: View {
             countrySection
             VStack(alignment: .leading, spacing: 0) {
                 ruleControls.padding(14)
+                if let exportWarning {
+                    Label(exportWarning, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                        .padding(.horizontal, 18).padding(.bottom, 12)
+                }
                 if let fileError {
                     HStack(alignment: .top, spacing: 10) {
                         Label(fileError, systemImage: "exclamationmark.triangle")
@@ -377,28 +383,26 @@ struct RulesView: View {
     }
     private func exportFile() {
         fileError = nil
-        document = RulesDocument(text: store.exportRules()); showExport = true
+        exportWarning = nil
+        do {
+            let text = try store.exportRules()
+            exportWarning = RulesArchive.migrationWarning(for: text)
+            document = RulesDocument(text: text)
+            showExport = true
+        } catch { fileError = error.localizedDescription }
     }
     private func importFile(_ result: Result<[URL], Error>) {
         do {
             guard let url = try result.get().first else { return }
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
-            let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard size <= 2_000_000 else { throw ImportError.invalidFile }
-            let data = try Data(contentsOf: url)
-            guard data.count <= 2_000_000, let text = String(data: data, encoding: .utf8) else { throw ImportError.invalidFile }
-            try store.importRules(text: text)
+            try store.importRules(text: RulesArchive.readText(at: url))
             filter = .all; store.searchText = ""; fileError = nil
         } catch { if !isUserCancellation(error) { fileError = error.localizedDescription } }
     }
     private func isUserCancellation(_ error: Error) -> Bool {
         let error = error as NSError
         return error.domain == NSCocoaErrorDomain && error.code == NSUserCancelledError
-    }
-    private enum ImportError: LocalizedError {
-        case invalidFile
-        var errorDescription: String? { "请选择小于 2 MB 的 UTF-8 规则文件。支持文本或 JSON。" }
     }
 }
 

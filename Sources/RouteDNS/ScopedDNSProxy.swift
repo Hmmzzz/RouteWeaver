@@ -6,12 +6,14 @@ import Network
 /// and remove that configuration before calling stop(). No system settings are
 /// written here. A stopped instance is not restartable; construct a new one.
 public final class ScopedDNSProxy {
+    typealias UDPReplySender = (NWConnection, Data, @escaping (NWError?) -> Void) -> Void
     public let port: UInt16
     private let queue = DispatchQueue(label: "com.routeweaver.dns.listener", qos: .utility)
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let https: DNSHTTPSUpstream
     private let original: DNSOriginalUpstream
     private let processor: DNSProcessor
+    private let sendUDP: UDPReplySender
     private var udp: NWListener?
     private var tcp: NWListener?
     private var ready = Set<String>()
@@ -26,6 +28,7 @@ public final class ScopedDNSProxy {
     public init(port: UInt16 = 53535, directCIDRs: [String], directDomains: [String]) throws {
         guard port > 0 else { throw DNSProxyError.listener("无效的端口") }
         self.port = port
+        sendUDP = Self.sendDatagram
         let https = DNSHTTPSUpstream(), original = DNSOriginalUpstream()
         self.https = https; self.original = original
         do {
@@ -37,9 +40,9 @@ public final class ScopedDNSProxy {
     }
     /// Dependency boundary for loopback integration tests. The caller supplies
     /// the same processor used in production, with controlled upstreams.
-    init(port: UInt16, processor: DNSProcessor) throws {
+    init(port: UInt16, processor: DNSProcessor, sendUDP: @escaping UDPReplySender = ScopedDNSProxy.sendDatagram) throws {
         guard port > 0 else { throw DNSProxyError.listener("无效的端口") }
-        self.port = port; self.processor = processor
+        self.port = port; self.processor = processor; self.sendUDP = sendUDP
         https = DNSHTTPSUpstream(); original = DNSOriginalUpstream()
         queue.setSpecific(key: queueKey, value: 1)
     }
@@ -153,9 +156,15 @@ public final class ScopedDNSProxy {
         peer.idle?.cancel(); peer.connection.cancel()
     }
     private func receiveUDP(_ peer: DNSPeer) {
-        guard peers[peer.id] != nil, !stopped else { return }
+        // Keep completed replies inside the per-peer transport window too.
+        // Pausing just this connection bounds send buffers without letting one
+        // slow peer consume other peers' receive or original-resolver slots.
+        guard peers[peer.id] != nil, !stopped, !peer.receiving,
+              peer.activity.requests + peer.activity.pendingSends < DNSProcessor.maximumRequestsPerPeer else { return }
+        peer.receiving = true
         peer.connection.receiveMessage { [weak self, weak peer] data, _, _, error in
             guard let self, let peer, self.peers[peer.id] != nil, !self.stopped else { return }
+            peer.receiving = false
             guard error == nil else { self.close(peer); return }
             self.touch(peer)
             peer.activity.hasReceivedDatagram = true
@@ -169,16 +178,22 @@ public final class ScopedDNSProxy {
                         packet = DNSWire.failure(to: data, rcode: flags & 0xf, truncated: true)
                     }
                     peer.activity.pendingSends += 1
-                    peer.connection.send(content: packet, completion: .contentProcessed { [weak self, weak peer] error in
-                        guard let self, let peer, self.peers[peer.id] != nil else { return }
-                        peer.activity.pendingSends -= 1
-                        if error != nil { self.close(peer) }
-                        else { self.touch(peer) }
-                    })
+                    self.sendUDP(peer.connection, packet) { [weak self, weak peer] error in
+                        guard let self else { return }
+                        self.queue.async {
+                            guard let peer, self.peers[peer.id] != nil else { return }
+                            peer.activity.pendingSends -= 1
+                            if error != nil { self.close(peer) }
+                            else { self.touch(peer); self.receiveUDP(peer) }
+                        }
+                    }
                 }
             }
             self.receiveUDP(peer)
         }
+    }
+    static func sendDatagram(_ connection: NWConnection, _ packet: Data, completion: @escaping (NWError?) -> Void) {
+        connection.send(content: packet, completion: .contentProcessed(completion))
     }
     private func advanceTCP(_ peer: DNSPeer) {
         guard peers[peer.id] != nil, !stopped else { return }
